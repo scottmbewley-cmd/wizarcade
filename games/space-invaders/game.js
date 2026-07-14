@@ -8,6 +8,8 @@
 // engine doesn't try to spawn faster than the frame budget allows; speed
 // and fire-rate keep climbing linearly forever with no floor/ceiling, so
 // the ramp never stops getting harder even after spawn density saturates.
+// (v1.1: visual/bug-fix pass only — none of the constants or formulas in
+// this block were touched.)
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -48,12 +50,178 @@ function difficultyFireChance(elapsedSec) {
   return FIRE_CHANCE_BASE + elapsedSec * FIRE_CHANCE_GROWTH;
 }
 
+// --- Retro palette ---
+const COLOR_PLAYER = 0x33ff66;
+const COLOR_ALIEN_CRAB = 0x4dd8ff; // cyan
+const COLOR_ALIEN_SQUID = 0xff5da2; // pink
+const COLOR_ALIEN_OCTOPUS = 0xffe066; // yellow
+const COLOR_BULLET_PLAYER_CORE = 0xffffff;
+const COLOR_BULLET_PLAYER_GLOW = 0x33ff99;
+const COLOR_BULLET_ALIEN_CORE = 0xffb020;
+const COLOR_BULLET_ALIEN_GLOW = 0xffe9b0;
+
+// --- Pixel-art silhouettes (code-drawn, no external images) ---
+const PLAYER_PIXELS = [
+  "......X......",
+  ".....XXX.....",
+  ".....XXX.....",
+  "....XXXXX....",
+  "...XXXXXXX...",
+  "XXXXXXXXXXXXX",
+  "XXXXXXXXXXXXX",
+  "XXXXXXXXXXXXX",
+];
+
+const ALIEN_SQUID_PIXELS = [
+  "..X..X..",
+  "...XX...",
+  "..XXXX..",
+  ".XX..XX.",
+  "XXXXXXXX",
+  "X.XXXX.X",
+  "X.X..X.X",
+  "..X..X..",
+];
+
+const ALIEN_CRAB_PIXELS = [
+  "..X.....X..",
+  "...X...X...",
+  "..XXXXXXX..",
+  ".XX.XXX.XX.",
+  "XXXXXXXXXXX",
+  "X.XXXXXXX.X",
+  "X.X.....X.X",
+  "...XX.XX...",
+];
+
+const ALIEN_OCTOPUS_PIXELS = [
+  "....XXXX....",
+  ".XXXXXXXXXX.",
+  "XXXXXXXXXXXX",
+  "XXX..XX..XXX",
+  "XXXXXXXXXXXX",
+  "..XX....XX..",
+  ".XX.XXXX.XX.",
+  "XX.XX..XX.XX",
+];
+
+const ALIEN_TYPES = [
+  { key: "alienSquid", pixels: ALIEN_SQUID_PIXELS, color: COLOR_ALIEN_SQUID },
+  { key: "alienCrab", pixels: ALIEN_CRAB_PIXELS, color: COLOR_ALIEN_CRAB },
+  { key: "alienOctopus", pixels: ALIEN_OCTOPUS_PIXELS, color: COLOR_ALIEN_OCTOPUS },
+];
+
+function drawPixelTexture(scene, gfx, key, pixels, pixelSize, color) {
+  gfx.clear();
+  gfx.fillStyle(color, 1);
+  for (let r = 0; r < pixels.length; r++) {
+    const row = pixels[r];
+    for (let c = 0; c < row.length; c++) {
+      if (row[c] === "X") {
+        gfx.fillRect(c * pixelSize, r * pixelSize, pixelSize, pixelSize);
+      }
+    }
+  }
+  gfx.generateTexture(key, pixels[0].length * pixelSize, pixels.length * pixelSize);
+}
+
+function drawBulletTexture(scene, gfx, key, glowColor, coreColor, w, h) {
+  gfx.clear();
+  gfx.fillStyle(glowColor, 0.4);
+  gfx.fillRoundedRect(0, 0, w, h, w / 2);
+  gfx.fillStyle(coreColor, 1);
+  gfx.fillRoundedRect(w / 2 - 2, 2, 4, h - 4, 2);
+  gfx.generateTexture(key, w, h);
+}
+
+function drawStarfieldTexture(scene, gfx, key, w, h) {
+  gfx.clear();
+  for (let i = 0; i < 70; i++) {
+    const x = Math.random() * w;
+    const y = Math.random() * h;
+    const size = Math.random() < 0.15 ? 2 : 1;
+    const alpha = 0.3 + Math.random() * 0.6;
+    gfx.fillStyle(0xffffff, alpha);
+    gfx.fillRect(x, y, size, size);
+  }
+  gfx.generateTexture(key, w, h);
+}
+
+function drawScanlineTexture(scene, gfx, key) {
+  gfx.clear();
+  gfx.fillStyle(0x000000, 0.25);
+  gfx.fillRect(0, 0, 4, 1);
+  gfx.generateTexture(key, 4, 4);
+}
+
 class MainScene extends Phaser.Scene {
   constructor() {
     super("main");
   }
 
+  buildTextures() {
+    const gfx = this.add.graphics();
+
+    drawPixelTexture(this, gfx, "playerShip", PLAYER_PIXELS, 4, COLOR_PLAYER);
+    ALIEN_TYPES.forEach((t) => drawPixelTexture(this, gfx, t.key, t.pixels, 4, t.color));
+    drawBulletTexture(this, gfx, "bulletPlayer", COLOR_BULLET_PLAYER_GLOW, COLOR_BULLET_PLAYER_CORE, 10, 22);
+    drawBulletTexture(this, gfx, "bulletAlien", COLOR_BULLET_ALIEN_GLOW, COLOR_BULLET_ALIEN_CORE, 8, 18);
+    drawStarfieldTexture(this, gfx, "starfield", 240, 400);
+    drawScanlineTexture(this, gfx, "scanline");
+
+    gfx.destroy();
+  }
+
+  createBackground() {
+    this.starTile = this.add
+      .tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, "starfield")
+      .setDepth(-20);
+
+    this.add
+      .tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, "scanline")
+      .setDepth(20)
+      .setAlpha(0.5);
+  }
+
+  showControlHint() {
+    const box = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 300, 90, 0x000000, 0.55)
+      .setDepth(15);
+
+    const txt = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2, "DRAG TO STEER\nAUTO-FIRE IS ON", {
+        fontFamily: "monospace",
+        fontSize: "18px",
+        fontStyle: "bold",
+        color: "#eaffea",
+        align: "center",
+        lineSpacing: 8,
+      })
+      .setOrigin(0.5)
+      .setDepth(16);
+
+    this.hintObjects = [box, txt];
+    this.hintDismissed = false;
+    this.hintTimer = this.time.delayedCall(3200, () => this.dismissHint());
+  }
+
+  dismissHint() {
+    if (this.hintDismissed || !this.hintObjects) return;
+    this.hintDismissed = true;
+    if (this.hintTimer) this.hintTimer.remove();
+
+    this.tweens.add({
+      targets: this.hintObjects,
+      alpha: 0,
+      duration: 350,
+      onComplete: () => this.hintObjects.forEach((o) => o.destroy()),
+    });
+  }
+
   create() {
+    this.buildTextures();
+    this.createBackground();
+
     this.startTime = this.time.now;
     this.gameOver = false;
     this.kills = 0;
@@ -61,9 +229,10 @@ class MainScene extends Phaser.Scene {
     this.pointerX = GAME_WIDTH / 2;
 
     // Player
-    this.player = this.add.rectangle(GAME_WIDTH / 2, PLAYER_Y, PLAYER_SIZE, PLAYER_SIZE, 0x4ade80);
-    this.physics.add.existing(this.player);
+    this.player = this.physics.add.image(GAME_WIDTH / 2, PLAYER_Y, "playerShip");
+    this.player.body.setSize(PLAYER_SIZE, PLAYER_SIZE, true);
     this.player.body.setCollideWorldBounds(true);
+    this.player.setDepth(5);
 
     // Groups
     this.playerBullets = this.physics.add.group();
@@ -74,6 +243,7 @@ class MainScene extends Phaser.Scene {
     this.input.on("pointerdown", (p) => {
       this.pointerActive = true;
       this.pointerX = p.x;
+      this.dismissHint();
     });
     this.input.on("pointermove", (p) => {
       if (this.pointerActive) this.pointerX = p.x;
@@ -87,12 +257,19 @@ class MainScene extends Phaser.Scene {
     this.keyA = this.input.keyboard.addKey("A");
     this.keyD = this.input.keyboard.addKey("D");
 
-    // Score display
-    this.scoreText = this.add.text(14, 12, "0", {
-      fontFamily: "monospace",
-      fontSize: "22px",
-      color: "#f2f2f5",
-    });
+    // HUD — retro arcade score readout
+    this.scoreText = this.add
+      .text(14, 12, "SCORE 000000", {
+        fontFamily: '"Courier New", monospace',
+        fontSize: "22px",
+        fontStyle: "bold",
+        color: "#33ff66",
+        stroke: "#003311",
+        strokeThickness: 3,
+      })
+      .setDepth(21);
+
+    this.showControlHint();
 
     // Timers
     this.lastFireTime = 0;
@@ -134,8 +311,10 @@ class MainScene extends Phaser.Scene {
     });
 
     const x = Phaser.Math.Between(ALIEN_SIZE, GAME_WIDTH - ALIEN_SIZE);
-    const alien = this.add.rectangle(x, -ALIEN_SIZE, ALIEN_SIZE, ALIEN_SIZE, 0xff5d5d);
-    this.physics.add.existing(alien);
+    const type = ALIEN_TYPES[Phaser.Math.Between(0, ALIEN_TYPES.length - 1)];
+    const alien = this.physics.add.image(x, -ALIEN_SIZE, type.key);
+    alien.body.setSize(ALIEN_SIZE, ALIEN_SIZE, true);
+    alien.setDepth(4);
     this.aliens.add(alien);
 
     alien.driftDir = Phaser.Math.Between(0, 1) === 0 ? -1 : 1;
@@ -149,10 +328,17 @@ class MainScene extends Phaser.Scene {
     this.aliens.getChildren().forEach((alien) => {
       if (!alien.active) return;
       if (Math.random() < chance) {
-        const bullet = this.add.rectangle(alien.x, alien.y + ALIEN_SIZE, 4, 14, 0xffe066);
-        this.physics.add.existing(bullet);
-        bullet.body.setVelocityY(ALIEN_BULLET_SPEED);
+        const bullet = this.physics.add.image(alien.x, alien.y + ALIEN_SIZE, "bulletAlien");
+        bullet.body.setSize(4, 14, true);
+        bullet.setDepth(3);
+        // Bullets must join the group BEFORE velocity is set — Phaser's
+        // Arcade physics group re-applies its (zero-velocity) defaults to
+        // every member's body the moment it's added via group.add(), which
+        // silently overwrote any velocity set beforehand. That was the bug
+        // behind "no idea what the fire is" and the stray marks that never
+        // moved away from their spawn point.
         this.alienBullets.add(bullet);
+        bullet.body.setVelocityY(ALIEN_BULLET_SPEED);
       }
     });
   }
@@ -179,10 +365,12 @@ class MainScene extends Phaser.Scene {
     if (time - this.lastFireTime < PLAYER_FIRE_INTERVAL_MS) return;
     this.lastFireTime = time;
 
-    const bullet = this.add.rectangle(this.player.x, this.player.y - PLAYER_SIZE, 4, 14, 0x4ade80);
-    this.physics.add.existing(bullet);
-    bullet.body.setVelocityY(-PLAYER_BULLET_SPEED);
+    const bullet = this.physics.add.image(this.player.x, this.player.y - PLAYER_SIZE, "bulletPlayer");
+    bullet.body.setSize(10, 20, true);
+    bullet.setDepth(3);
+    // See note in alienFireTick(): add to group first, THEN set velocity.
     this.playerBullets.add(bullet);
+    bullet.body.setVelocityY(-PLAYER_BULLET_SPEED);
   }
 
   update(time) {
@@ -191,6 +379,8 @@ class MainScene extends Phaser.Scene {
     const elapsed = this.elapsedSeconds();
     const descendSpeed = difficultyDescendSpeed(elapsed);
     const driftSpeed = difficultyDriftSpeed(elapsed);
+
+    this.starTile.tilePositionY -= 0.4;
 
     this.updatePlayerMovement();
     this.autoFire(time);
@@ -222,7 +412,7 @@ class MainScene extends Phaser.Scene {
 
     // Live score: survival time + kills.
     const liveScore = Math.floor(elapsed) * 2 + this.kills * 10;
-    this.scoreText.setText(String(liveScore));
+    this.scoreText.setText("SCORE " + String(liveScore).padStart(6, "0"));
   }
 
   onBulletHitsAlien(bullet, alien) {
@@ -247,29 +437,36 @@ class MainScene extends Phaser.Scene {
 
     this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 90, "GAME OVER", {
-        fontFamily: "monospace",
+        fontFamily: '"Courier New", monospace',
         fontSize: "32px",
+        fontStyle: "bold",
         color: "#ff5d5d",
+        stroke: "#330000",
+        strokeThickness: 4,
       })
       .setOrigin(0.5)
       .setDepth(11);
 
     this.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, `Score: ${finalScore}`, {
-        fontFamily: "monospace",
-        fontSize: "26px",
-        color: "#f2f2f5",
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, "SCORE " + String(finalScore).padStart(6, "0"), {
+        fontFamily: '"Courier New", monospace',
+        fontSize: "24px",
+        fontStyle: "bold",
+        color: "#33ff66",
+        stroke: "#003311",
+        strokeThickness: 3,
       })
       .setOrigin(0.5)
       .setDepth(11);
 
-    const retryBtn = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, 260, 76, 0x4ade80, 1);
+    const retryBtn = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, 260, 76, 0x33ff66, 1);
+    retryBtn.setStrokeStyle(4, 0x003311);
     retryBtn.setDepth(11);
     retryBtn.setInteractive({ useHandCursor: true });
 
     this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, "TAP TO RETRY", {
-        fontFamily: "monospace",
+        fontFamily: '"Courier New", monospace',
         fontSize: "20px",
         color: "#0c0d12",
         fontStyle: "bold",
@@ -288,7 +485,8 @@ const config = {
   parent: "game-container",
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
-  backgroundColor: "#0c0d12",
+  backgroundColor: "#05050a",
+  pixelArt: true,
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
