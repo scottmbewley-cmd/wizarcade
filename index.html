@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>WizArcade</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="wordmark">WizArcade</header>
+
+  <main class="tile-grid" id="tile-grid"></main>
+
+  <script>
+    // Add a new game by adding one entry here — no other markup changes needed.
+    const GAMES = [
+      {
+        title: "Space Invaders",
+        subtitle: "Endless survival",
+        href: "games/space-invaders/index.html"
+      }
+    ];
+
+    const grid = document.getElementById("tile-grid");
+    for (const game of GAMES) {
+      const a = document.createElement("a");
+      a.className = "tile";
+      a.href = game.href;
+      a.innerHTML = `
+        <span class="tile-title">${game.title}</span>
+        <span class="tile-subtitle">${game.subtitle}</span>
+      `;
+      grid.appendChild(a);
+    }
+  </script>
+</body>
+</html>
