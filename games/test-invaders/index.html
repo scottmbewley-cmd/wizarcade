@@ -42,14 +42,60 @@
     align-items: center;
     justify-content: center;
   }
+  /* TEMP DIAGNOSTIC — safe to delete later */
+  #size-readout {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 2px;
+    z-index: 99999;
+    text-align: center;
+    font-family: monospace;
+    font-size: 11px;
+    color: #ffe066;
+    background: rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 </style>
 </head>
 <body>
   <div id="game-frame">
     <div id="game-container"></div>
   </div>
+  <div id="size-readout">measuring…</div>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
   <script src="../../controller/controller.js"></script>
   <script src="game.js"></script>
+  <script>
+    // TEMP DIAGNOSTIC — safe to delete later. Polls for the Phaser canvas
+    // and controller strip (both created asynchronously by game.js) and
+    // reports their actual measured getBoundingClientRect() size. Does
+    // not touch or depend on any existing layout/sizing logic.
+    (function () {
+      var readout = document.getElementById("size-readout");
+
+      function update() {
+        var canvas = document.querySelector("#game-container canvas");
+        var strip = document.querySelector(".wiz-ctrl");
+        if (!canvas || !strip) return;
+
+        var c = canvas.getBoundingClientRect();
+        var s = strip.getBoundingClientRect();
+        var ratio = s.height > 0 ? (s.width / s.height).toFixed(2) : "--";
+
+        readout.textContent =
+          "CANVAS: " + Math.round(c.width) + "x" + Math.round(c.height) + "px" +
+          "  |  STRIP: " + Math.round(s.width) + "x" + Math.round(s.height) + "px" +
+          "  |  STRIP RATIO: " + ratio;
+      }
+
+      window.addEventListener("load", update);
+      window.addEventListener("resize", update);
+      setInterval(update, 250); // covers the async canvas/strip creation and any layout settling
+    })();
+  </script>
 </body>
 </html>
