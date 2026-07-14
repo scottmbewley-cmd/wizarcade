@@ -18,13 +18,19 @@
         title: "Space Invaders",
         subtitle: "Endless survival",
         href: "games/space-invaders/index.html"
+      },
+      {
+        title: "Test Invaders",
+        subtitle: "Controller test build — not the real game",
+        href: "games/test-invaders/index.html",
+        test: true
       }
     ];
 
     const grid = document.getElementById("tile-grid");
     for (const game of GAMES) {
       const a = document.createElement("a");
-      a.className = "tile";
+      a.className = game.test ? "tile tile--test" : "tile";
       a.href = game.href;
       a.innerHTML = `
         <span class="tile-title">${game.title}</span>

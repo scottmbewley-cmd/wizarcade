@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>WizController Demo — WizArcade</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #0c0d12;
+    color: #eaffea;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+    touch-action: none;
+  }
+  .panel {
+    padding: 20px;
+  }
+  h1 {
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    color: #4dd8ff;
+    margin: 0 0 6px;
+  }
+  p.sub {
+    font-size: 12px;
+    color: #7a8090;
+    margin: 0 0 18px;
+  }
+  button#modeToggle {
+    background: #1a1c26;
+    color: #4dd8ff;
+    border: 1px solid #4dd8ff;
+    padding: 10px 16px;
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 6px;
+    touch-action: manipulation;
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+  .chip {
+    padding: 8px 14px;
+    border: 1px solid rgba(77, 216, 255, 0.35);
+    border-radius: 6px;
+    font-size: 13px;
+    opacity: 0.4;
+    transition: opacity 0.1s ease, background 0.1s ease;
+    display: flex;
+    align-items: center;
+  }
+  .chip.on {
+    opacity: 1;
+    background: rgba(77, 216, 255, 0.18);
+    border-color: #4dd8ff;
+  }
+  .tapdot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #333;
+    margin-left: 8px;
+  }
+  .tapdot.on {
+    background: #ffe066;
+    box-shadow: 0 0 8px #ffe066;
+  }
+  .values {
+    margin-top: 18px;
+    font-size: 13px;
+    color: #9aa0ff;
+    line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <h1>WIZCONTROLLER — STANDALONE DEMO</h1>
+    <p class="sub">Exercises every input type in isolation, no game attached.</p>
+
+    <button id="modeToggle">MODE: ABSOLUTE (tap to switch)</button>
+
+    <div class="row">
+      <div class="chip" id="chip-left">LEFT</div>
+      <div class="chip" id="chip-right">RIGHT</div>
+      <div class="chip" id="chip-up">UP</div>
+      <div class="chip" id="chip-down">DOWN</div>
+      <div class="chip" id="chip-tap">TAP<span class="tapdot" id="tapdot"></span></div>
+    </div>
+
+    <div class="values">
+      <div id="val-active">active: false</div>
+      <div id="val-xy">x: -- / y: --</div>
+      <div id="val-dxdy">dx: -- / dy: --</div>
+    </div>
+  </div>
+
+  <script src="controller.js"></script>
+  <script>
+    let mode = "absolute";
+    let controller = null;
+
+    function setChip(id, on) {
+      document.getElementById(id).classList.toggle("on", !!on);
+    }
+
+    function buildController() {
+      if (controller) controller.destroy();
+
+      controller = new WizController({
+        mode: mode,
+        directions: { left: true, right: true, up: true, down: true },
+        tap: true,
+        rangeX: [0, 480],
+        rangeY: [0, 800],
+        height: 150,
+        label:
+          mode === "absolute"
+            ? "ABSOLUTE MODE — DRAG WITHIN STRIP"
+            : "RELATIVE MODE — VIRTUAL JOYSTICK, TOUCH ANYWHERE",
+      });
+
+      controller.onMove((data) => {
+        setChip("chip-left", data.left);
+        setChip("chip-right", data.right);
+        setChip("chip-up", data.up);
+        setChip("chip-down", data.down);
+
+        document.getElementById("val-active").textContent = "active: " + data.active;
+        document.getElementById("val-xy").textContent =
+          "x: " + (data.x === null ? "--" : data.x.toFixed(1)) + " / y: " + (data.y === null ? "--" : data.y.toFixed(1));
+        document.getElementById("val-dxdy").textContent =
+          "dx: " + (data.dx === null ? "--" : data.dx.toFixed(2)) + " / dy: " + (data.dy === null ? "--" : data.dy.toFixed(2));
+      });
+
+      controller.onTap(() => {
+        const dot = document.getElementById("tapdot");
+        dot.classList.add("on");
+        setTimeout(() => dot.classList.remove("on"), 220);
+      });
+    }
+
+    document.getElementById("modeToggle").addEventListener("click", () => {
+      mode = mode === "absolute" ? "relative" : "absolute";
+      document.getElementById("modeToggle").textContent = "MODE: " + mode.toUpperCase() + " (tap to switch)";
+      buildController();
+    });
+
+    buildController();
+  </script>
+</body>
+</html>

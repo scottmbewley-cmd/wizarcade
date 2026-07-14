@@ -63,3 +63,17 @@ body {
   font-size: 0.85rem;
   color: #9095a5;
 }
+
+.tile--test {
+  border: 1px dashed #ffb020;
+  background: #1a1710;
+}
+
+.tile--test:active {
+  background: #221c10;
+  border-color: #ffc966;
+}
+
+.tile--test .tile-subtitle {
+  color: #ffb020;
+}
