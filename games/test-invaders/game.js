@@ -8,7 +8,7 @@
 //
 //   1. The bespoke in-canvas footer-drag control code is gone. Movement
 //      input now comes entirely from a WizController instance (absolute
-//      mode, left/right only), positioned absolutely within #game-frame
+//      mode, left/right only), positioned absolutely within #page-frame
 //      using controller.js's player-adjustable layout feature (see
 //      createController() below and controller.js's own top-of-file
 //      usage comment for the full adjustable API).
@@ -296,7 +296,7 @@ class MainScene extends Phaser.Scene {
     }
 
     this.wizController = new WizController({
-      target: document.getElementById("game-frame"),
+      target: document.getElementById("page-frame"),
       mode: "absolute",
       directions: { left: true, right: true },
       tap: false,
@@ -309,6 +309,11 @@ class MainScene extends Phaser.Scene {
       anchorBelow: document.getElementById("game-container"),
       minWidth: 140,
       minHeight: 90,
+      // Capped well below #page-frame's reserved box-space (340px, see
+      // index.html) so the box can never grow into a size that would
+      // force the page to scroll to fit it.
+      maxWidth: 400,
+      maxHeight: 300,
     });
 
     this.wizController.onMove((data) => {

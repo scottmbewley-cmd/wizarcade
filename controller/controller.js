@@ -58,14 +58,18 @@
 //     maxHeight: null,      // null = clamp to target's own height
 //   });
 //
-//   When adjustable, a small "⚙" icon appears in the corner of `target`.
-//   Tapping it enters adjustment mode: the box gets a dashed yellow
-//   border, becomes draggable anywhere within `target` (bounded — see
-//   below), and a corner resize handle appears. Tapping the icon again
-//   (it now reads "✓") exits back to normal play, where the box behaves
-//   exactly like any other controller instance. Directional/tap input
-//   keeps working correctly at whatever size/position the box currently
-//   has — nothing about input detection changes based on adjustable mode.
+//   When adjustable, the box is ALWAYS directly draggable/resizable — no
+//   settings icon, no mode toggle, like a window that's always draggable
+//   by its title bar:
+//     - The top titlebarHeight px of the box (a lightly-tinted strip,
+//       "cursor: move") drags the whole box to reposition it, anywhere
+//       within `target` (bounded — see below).
+//     - The corner resize handle (always visible) resizes it.
+//     - Everywhere else in the box behaves as normal directional/tap
+//       input, exactly like a non-adjustable controller.
+//   Which zone a touch belongs to is decided once, at the moment it
+//   starts — a drag begun in the titlebar keeps moving the box even if
+//   the finger leaves that strip mid-drag, same as a real window.
 //
 //   The chosen {x, y, w, h} is saved to localStorage[storageKey] on every
 //   drag/resize release and reloaded automatically next visit. If nothing
@@ -75,8 +79,8 @@
 //
 //   `dock`/`matchWidthOf`/`aspectRatio` are ignored when `adjustable` is
 //   true — adjustable mode has its own explicit x/y/w/h layout model.
-//   Games that don't set `adjustable` are completely unaffected: no icon,
-//   no drag/resize, fixed size/position exactly as before.
+//   Games that don't set `adjustable` are completely unaffected: no
+//   titlebar/resize handle, fixed size/position exactly as before.
 //
 // directions supports all 8 compass points: left, right, up, down,
 // upLeft, upRight, downLeft, downRight — each independently on/off.
@@ -98,8 +102,8 @@
 //
 // A direction that isn't listed in `directions` is fully inert: no arrow/
 // track/marker is ever drawn for it, and its value is always false/null.
-// No onMove/onTap events fire at all while adjustment mode is active —
-// touches on the box are interpreted as drag/resize instead.
+// No onMove/onTap events fire for touches that land in the titlebar or
+// resize-handle zones of an adjustable box — those are drag/resize only.
 
 (function (global) {
   "use strict";
@@ -138,6 +142,7 @@
     minHeight: 90,
     maxWidth: null,
     maxHeight: null,
+    titlebarHeight: 22,
   };
 
   let stylesInjected = false;
@@ -150,7 +155,9 @@
       "  border: 2px solid rgba(77, 216, 255, 0.6); border-radius: 14px; touch-action: none;",
       "  -webkit-tap-highlight-color: transparent; user-select: none;",
       '  font-family: "Courier New", monospace; overflow: hidden; }',
-      ".wiz-ctrl.wiz-ctrl-adjusting { border-color: #ffe066; border-style: dashed; cursor: move; }",
+      ".wiz-ctrl-titlebar { position: absolute; top: 0; left: 0; right: 0; height: 22px;",
+      "  background: rgba(77, 216, 255, 0.08); border-bottom: 1px solid rgba(77, 216, 255, 0.18);",
+      "  cursor: move; pointer-events: none; }",
       ".wiz-ctrl-label { position: absolute; top: 6px; left: 0; right: 0; text-align: center;",
       "  font-size: 11px; letter-spacing: 0.08em; color: rgba(77, 216, 255, 0.6); pointer-events: none; }",
       ".wiz-ctrl-track-h { position: absolute; left: 24px; right: 24px; top: 50%; height: 2px;",
@@ -170,12 +177,6 @@
       ".wiz-ctrl-arrow { position: absolute; color: rgba(77, 216, 255, 0.45); font-size: 16px; pointer-events: none; }",
       ".wiz-ctrl-tap-flash { position: absolute; inset: 0; background: rgba(77, 216, 255, 0.16); opacity: 0; pointer-events: none; }",
       ".wiz-ctrl-tap-flash.flash { opacity: 1; transition: opacity 0.25s ease; }",
-      ".wiz-ctrl-adjust-icon { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px;",
-      "  border-radius: 8px; background: rgba(26, 28, 38, 0.92); border: 1px solid rgba(77, 216, 255, 0.6);",
-      "  color: #4dd8ff; display: flex; align-items: center; justify-content: center; font-size: 16px;",
-      "  cursor: pointer; z-index: 50; touch-action: manipulation; user-select: none;",
-      "  -webkit-tap-highlight-color: transparent; }",
-      ".wiz-ctrl-adjust-icon.active { border-color: #ffe066; color: #ffe066; }",
       ".wiz-ctrl-resize-handle { position: absolute; right: -3px; bottom: -3px; width: 26px; height: 26px;",
       "  border-radius: 6px; background: #ffe066; color: #10121c; display: flex; align-items: center;",
       "  justify-content: center; font-size: 15px; font-weight: bold; cursor: nwse-resize; z-index: 45;",
@@ -204,7 +205,7 @@
       this._startTime = 0;
       this._lastX = 0;
       this._lastY = 0;
-      this._adjusting = false;
+      this._draggingBox = false;
 
       this._buildDom();
       this._bindEvents();
@@ -226,9 +227,6 @@
       if (this._resizeObserver) this._resizeObserver.disconnect();
       if (this._windowResizeHandler) window.removeEventListener("resize", this._windowResizeHandler);
       clearTimeout(this._tapFlashTimer);
-      if (this._adjustIcon && this._adjustIcon.parentNode) {
-        this._adjustIcon.parentNode.removeChild(this._adjustIcon);
-      }
       if (this.element && this.element.parentNode) {
         this.element.parentNode.removeChild(this.element);
       }
@@ -341,8 +339,11 @@
     _clampLayout(x, y, w, h) {
       const targetRect = this._targetRect();
 
-      const maxW = this.options.maxWidth || targetRect.width;
-      const maxH = this.options.maxHeight || targetRect.height;
+      // An explicit maxWidth/maxHeight is an ADDITIONAL cap on top of —
+      // never instead of — target's own size, so the box can never be
+      // resized larger than the space it actually has to live in.
+      const maxW = Math.min(this.options.maxWidth || Infinity, targetRect.width);
+      const maxH = Math.min(this.options.maxHeight || Infinity, targetRect.height);
       const cw = clamp(w, this.options.minWidth, Math.max(this.options.minWidth, maxW));
       const ch = clamp(h, this.options.minHeight, Math.max(this.options.minHeight, maxH));
 
@@ -366,38 +367,11 @@
       this.element.style.height = this._layout.h + "px";
     }
 
-    _buildAdjustIcon() {
-      const target = this.options.target || document.body;
-      const icon = document.createElement("div");
-      icon.className = "wiz-ctrl-adjust-icon";
-      icon.textContent = "⚙";
-      icon.title = "Adjust control box position/size";
-      icon.addEventListener("click", () => this._toggleAdjustMode());
-      target.appendChild(icon);
-      this._adjustIcon = icon;
-    }
-
-    _toggleAdjustMode() {
-      this._adjusting = !this._adjusting;
-      this._adjustIcon.classList.toggle("active", this._adjusting);
-      this._adjustIcon.textContent = this._adjusting ? "✓" : "⚙";
-      this._adjustIcon.title = this._adjusting ? "Done adjusting" : "Adjust control box position/size";
-      this.element.classList.toggle("wiz-ctrl-adjusting", this._adjusting);
-      if (this._resizeHandle) {
-        this._resizeHandle.style.display = this._adjusting ? "flex" : "none";
-      }
-      // Release any in-progress touch so play input doesn't get "stuck"
-      // active when the player exits/enters adjustment mode mid-touch.
-      this._pointerId = null;
-      this._emitMove({ active: false });
-    }
-
     _buildResizeHandle() {
       const handle = document.createElement("div");
       handle.className = "wiz-ctrl-resize-handle";
       handle.textContent = "⇲";
       handle.title = "Drag to resize";
-      handle.style.display = "none";
       this.element.appendChild(handle);
       this._resizeHandle = handle;
 
@@ -408,7 +382,6 @@
       let startH = 0;
 
       handle.addEventListener("pointerdown", (e) => {
-        if (!this._adjusting) return;
         e.preventDefault();
         e.stopPropagation(); // never let this reach the box's own drag/input handling
         resizing = true;
@@ -462,6 +435,13 @@
         root.style.height = this.options.height + "px";
         root.style.position = "relative";
         root.style.flex = "0 0 auto";
+      }
+
+      if (this.options.adjustable) {
+        const titlebar = document.createElement("div");
+        titlebar.className = "wiz-ctrl-titlebar";
+        titlebar.style.height = this.options.titlebarHeight + "px";
+        root.appendChild(titlebar);
       }
 
       if (this.options.label) {
@@ -555,7 +535,6 @@
           this._layout = this._clampLayout(this._layout.x, this._layout.y, this._layout.w, this._layout.h);
         }
         this._applyLayout();
-        this._buildAdjustIcon();
         this._buildResizeHandle();
 
         // Non-destructive safety net: if the viewport changes size later
@@ -608,13 +587,19 @@
       this._lastY = this._startY;
       this._startTime = performance.now();
 
-      if (this._adjusting) {
-        // Whole-box drag-to-reposition instead of normal input reporting.
+      // Adjustable boxes have a "titlebar" strip (top titlebarHeight px)
+      // that drags the whole box to reposition it, like a window's title
+      // bar — decided once, here, at touch-start; everywhere else in the
+      // box is normal directional/tap input. The resize handle is a
+      // separate element that stops its own events from reaching here.
+      if (this.options.adjustable && this._startY <= this.options.titlebarHeight) {
+        this._draggingBox = true;
         this._dragBoxStartClientX = e.clientX;
         this._dragBoxStartClientY = e.clientY;
         this._dragBoxStartLayout = Object.assign({}, this._layout);
         return;
       }
+      this._draggingBox = false;
 
       if (this.options.mode === "relative" && this._joyBase) {
         this._joyOriginX = this._startX;
@@ -631,7 +616,7 @@
     _onPointerMove(e) {
       if (e.pointerId !== this._pointerId) return;
 
-      if (this._adjusting) {
+      if (this._draggingBox) {
         const dx = e.clientX - this._dragBoxStartClientX;
         const dy = e.clientY - this._dragBoxStartClientY;
         this._layout = this._clampLayout(
@@ -655,7 +640,8 @@
     _onPointerUp(e) {
       if (e.pointerId !== this._pointerId) return;
 
-      if (this._adjusting) {
+      if (this._draggingBox) {
+        this._draggingBox = false;
         this._pointerId = null;
         this._saveLayout();
         return;

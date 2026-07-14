@@ -10,37 +10,34 @@
     margin: 0;
     padding: 0;
     width: 100%;
-    min-height: 100%;
+    height: 100%;
     background: #000;
-    overflow-y: auto;
+    overflow: hidden;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
-    padding-top: 12px;
+    justify-content: center;
   }
   /*
-    #game-frame holds just the game canvas, portrait-locked to its
-    480:800 aspect ratio and capped to whichever of width/height the
-    viewport is tighter on (letterboxed on wide desktop screens instead
-    of stretching). The control box now floats independently below it
-    via controller.js's player-adjustable layout (position: absolute,
-    not a flex-flow participant), so a fixed 240px is reserved below
-    the canvas here for its default position/size and any player-chosen
-    resize — controller.js sets #game-frame to position:relative itself.
+    #page-frame is the WizController's `target` — it reserves room for
+    both the game canvas (#game-container, aspect-locked to 480:800) AND
+    the control box that floats below it (player-adjustable, position:
+    absolute within this element, sized/capped in game.js's
+    createController()). RESERVE_PX (340, matching the box's max
+    possible footprint plus gaps) is folded into BOTH the max-width and
+    max-height formulas below, so #page-frame's own box always fits the
+    viewport exactly — canvas height + box's reserved space always sums
+    to no more than 100vh, on any screen size, with no scrolling needed.
+    controller.js sets #page-frame to position:relative itself.
   */
-  #game-frame {
+  #page-frame {
     width: 100vw;
-    height: calc(100vh - 240px);
-    max-width: calc((100vh - 240px) * 480 / 800);
-    max-height: calc(100vw * 800 / 480);
-    display: flex;
-    flex-direction: column;
+    height: 100vh;
+    max-width: calc((100vh - 340px) * 480 / 800);
+    max-height: calc(100vw * 800 / 480 + 340px);
   }
   #game-container {
     width: 100%;
     aspect-ratio: 480 / 800;
-    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -65,7 +62,7 @@
 </style>
 </head>
 <body>
-  <div id="game-frame">
+  <div id="page-frame">
     <div id="game-container"></div>
   </div>
   <div id="size-readout">measuring…</div>
