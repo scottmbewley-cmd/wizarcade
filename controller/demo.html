@@ -9,16 +9,16 @@
   html, body {
     margin: 0;
     padding: 0;
-    min-width: 100%;
-    min-height: 100%;
+    width: 100%;
+    height: 100%;
     background: #0c0d12;
     color: #eaffea;
     font-family: "Courier New", monospace;
-    overflow-y: auto;
+    overflow: hidden;
+    touch-action: none;
   }
   .panel {
     padding: 20px;
-    padding-bottom: 60px;
   }
   h1 {
     font-size: 15px;
@@ -26,18 +26,12 @@
     color: #4dd8ff;
     margin: 0 0 6px;
   }
-  h2 {
-    font-size: 12px;
-    letter-spacing: 0.08em;
-    color: #ffe066;
-    margin: 32px 0 4px;
-  }
   p.sub {
     font-size: 12px;
     color: #7a8090;
     margin: 0 0 18px;
   }
-  button#modeToggle, button#copyRatioBtn {
+  button#modeToggle {
     background: #1a1c26;
     color: #4dd8ff;
     border: 1px solid #4dd8ff;
@@ -53,6 +47,12 @@
     grid-template-rows: repeat(3, 44px);
     gap: 8px;
     margin-top: 18px;
+  }
+  .row {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    flex-wrap: wrap;
   }
   .chip {
     padding: 8px 10px;
@@ -89,51 +89,6 @@
     color: #9aa0ff;
     line-height: 1.7;
   }
-
-  /* --- DEMO-ONLY resize sandbox (not part of controller.js) --- */
-  #resize-section p.sub {
-    margin-bottom: 12px;
-  }
-  #resize-wrap {
-    position: relative;
-    touch-action: none;
-  }
-  #resize-handle {
-    position: absolute;
-    right: -3px;
-    bottom: -3px;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    background: #ffe066;
-    color: #10121c;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 15px;
-    font-weight: bold;
-    cursor: nwse-resize;
-    z-index: 40;
-    box-shadow: 0 0 8px rgba(255, 224, 102, 0.6);
-    touch-action: none;
-    user-select: none;
-  }
-  #resize-readout {
-    margin-top: 12px;
-    font-size: 14px;
-    color: #ffe066;
-  }
-  #copyRatioBtn {
-    margin-top: 10px;
-    border-color: #ffe066;
-    color: #ffe066;
-  }
-  #copyStatus {
-    margin-top: 8px;
-    font-size: 12px;
-    color: #7a8090;
-    min-height: 16px;
-  }
 </style>
 </head>
 <body>
@@ -160,23 +115,6 @@
       <div id="val-xy">x: -- / y: --</div>
       <div id="val-dxdy">dx: -- / dy: --</div>
     </div>
-
-    <div id="resize-section">
-      <h2>RESIZE SANDBOX — DEMO PAGE ONLY, NOT A PRODUCTION FEATURE</h2>
-      <p class="sub">
-        Drag the yellow corner handle to freely resize the box below (no aspect
-        lock). Real games still use controller.js's normal aspectRatio /
-        matchWidthOf config — this is just for eyeballing a shape before you
-        hardcode it.
-      </p>
-      <div id="resize-wrap">
-        <!-- the WizController instance's own box is appended here -->
-        <div id="resize-handle" title="Drag to resize">⇲</div>
-      </div>
-      <div id="resize-readout">-- x --px — ratio --:1</div>
-      <button id="copyRatioBtn">COPY CURRENT RATIO</button>
-      <div id="copyStatus"></div>
-    </div>
   </div>
 
   <script src="controller.js"></script>
@@ -184,48 +122,14 @@
     let mode = "absolute";
     let controller = null;
 
-    const resizeWrap = document.getElementById("resize-wrap");
-    const resizeHandle = document.getElementById("resize-handle");
-    const readout = document.getElementById("resize-readout");
-
-    let boxW = 342;
-    let boxH = 228;
-
     function setChip(id, on) {
       document.getElementById(id).classList.toggle("on", !!on);
-    }
-
-    // Demo-only sizing helper: applies the current sandbox width/height
-    // directly to both the wrapper and the controller's own element. This
-    // never touches controller.js — it just overrides inline style on the
-    // DOM node controller.js already exposes as `controller.element`.
-    function applyBoxSize(w, h) {
-      boxW = w;
-      boxH = h;
-      resizeWrap.style.width = w + "px";
-      resizeWrap.style.height = h + "px";
-      if (controller && controller.element) {
-        controller.element.style.width = w + "px";
-        controller.element.style.height = h + "px";
-      }
-      updateReadout();
-    }
-
-    function updateReadout() {
-      const ratio = boxH > 0 ? boxW / boxH : 0;
-      readout.textContent = Math.round(boxW) + " x " + Math.round(boxH) + "px — ratio " + ratio.toFixed(2) + ":1";
     }
 
     function buildController() {
       if (controller) controller.destroy();
 
-      // dock: "flow" + an explicit target keeps this instance a normal,
-      // freely-sized block element instead of the production "fixed to
-      // the viewport bottom" default — that's what makes free resizing on
-      // this page possible without changing controller.js itself.
       controller = new WizController({
-        target: resizeWrap,
-        dock: "flow",
         mode: mode,
         directions: {
           left: true,
@@ -240,14 +144,12 @@
         tap: true,
         rangeX: [0, 480],
         rangeY: [0, 800],
-        height: boxH,
+        height: 150,
         label:
           mode === "absolute"
             ? "ABSOLUTE MODE — DRAG WITHIN STRIP"
             : "RELATIVE MODE — VIRTUAL JOYSTICK, TOUCH ANYWHERE",
       });
-
-      applyBoxSize(boxW, boxH);
 
       controller.onMove((data) => {
         setChip("chip-left", data.left);
@@ -277,80 +179,6 @@
       mode = mode === "absolute" ? "relative" : "absolute";
       document.getElementById("modeToggle").textContent = "MODE: " + mode.toUpperCase() + " (tap to switch)";
       buildController();
-    });
-
-    // --- Resize handle drag (demo page only) ---
-    let resizing = false;
-    let dragStartX = 0;
-    let dragStartY = 0;
-    let dragStartW = 0;
-    let dragStartH = 0;
-
-    resizeHandle.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      e.stopPropagation(); // never let this reach the controller's own pointer handling
-      resizing = true;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      dragStartW = boxW;
-      dragStartH = boxH;
-      resizeHandle.setPointerCapture(e.pointerId);
-    });
-
-    resizeHandle.addEventListener("pointermove", (e) => {
-      if (!resizing) return;
-      const dx = e.clientX - dragStartX;
-      const dy = e.clientY - dragStartY;
-      const maxW = Math.max(120, window.innerWidth - 40);
-      const maxH = Math.max(90, window.innerHeight - 260);
-      const w = Math.min(maxW, Math.max(80, dragStartW + dx));
-      const h = Math.min(maxH, Math.max(60, dragStartH + dy));
-      applyBoxSize(w, h);
-    });
-
-    resizeHandle.addEventListener("pointerup", (e) => {
-      resizing = false;
-    });
-    resizeHandle.addEventListener("pointercancel", () => {
-      resizing = false;
-    });
-
-    // --- Copy current ratio (demo page only) ---
-    function simplifyRatio(w, h) {
-      const target = w / h;
-      let best = { num: Math.round(target), den: 1 };
-      let bestErr = Math.abs(target - best.num);
-      for (let den = 1; den <= 12; den++) {
-        const num = Math.round(target * den);
-        if (num <= 0) continue;
-        const err = Math.abs(target - num / den);
-        if (err < bestErr) {
-          best = { num, den };
-          bestErr = err;
-        }
-      }
-      function gcd(a, b) {
-        return b === 0 ? a : gcd(b, a % b);
-      }
-      const g = gcd(best.num, best.den) || 1;
-      return best.num / g + ":" + best.den / g;
-    }
-
-    document.getElementById("copyRatioBtn").addEventListener("click", () => {
-      const text = simplifyRatio(boxW, boxH);
-      const status = document.getElementById("copyStatus");
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard
-          .writeText(text)
-          .then(() => {
-            status.textContent = "Copied to clipboard: " + text;
-          })
-          .catch(() => {
-            status.textContent = "Ratio (copy failed, select manually): " + text;
-          });
-      } else {
-        status.textContent = "Ratio (clipboard unavailable): " + text;
-      }
     });
 
     buildController();

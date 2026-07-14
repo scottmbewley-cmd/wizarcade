@@ -20,6 +20,12 @@
 //      Invaders build's saved preference.
 //
 // All movement is still delta-time scaled — nothing about that changed.
+//
+// TEMPORARY: the controller strip is currently in a resize-testing state
+// (see createController()/_setupResizeTestUI() below) — a draggable
+// corner handle lets the strip's shape be freely tested against the real
+// game instead of using the fixed matchWidthOf/aspectRatio:[3,2] config.
+// A follow-up pass will lock in a final ratio and remove this UI.
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -280,10 +286,29 @@ class MainScene extends Phaser.Scene {
   // pointer handlers. "flow" docking makes the strip a normal element in
   // the page's flex-column layout (see index.html), so it always sits
   // flush against the canvas with zero gap, regardless of letterboxing.
+  // TEMPORARY RESIZE-TEST BUILD: this normally passes matchWidthOf +
+  // aspectRatio:[3,2] (see the git history / a future follow-up) to lock
+  // the strip to the production trackpad shape automatically. For this
+  // testing pass those are intentionally omitted so the strip can be
+  // dragged to any freeform size via _setupResizeTestUI() below, without
+  // the width/height being fought over by an active ResizeObserver. Once
+  // a final ratio is picked, a follow-up will restore the fixed config
+  // and remove the resize UI — controller.js itself is untouched by any
+  // of this.
   createController() {
     if (this.wizController) {
       this.wizController.destroy(); // guard against duplicate strips on scene.restart()
     }
+    if (this._resizeTestHandle && this._resizeTestHandle.parentNode) {
+      this._resizeTestHandle.parentNode.removeChild(this._resizeTestHandle);
+    }
+    if (this._resizeTestPanel && this._resizeTestPanel.parentNode) {
+      this._resizeTestPanel.parentNode.removeChild(this._resizeTestPanel);
+    }
+
+    const gameContainer = document.getElementById("game-container");
+    const startW = gameContainer.getBoundingClientRect().width || GAME_WIDTH;
+    const startH = startW * (2 / 3); // starts at the same 3:2 shape production uses
 
     this.wizController = new WizController({
       target: document.getElementById("game-frame"),
@@ -292,10 +317,10 @@ class MainScene extends Phaser.Scene {
       directions: { left: true, right: true },
       tap: false,
       rangeX: [0, GAME_WIDTH],
-      matchWidthOf: document.getElementById("game-container"),
-      aspectRatio: [3, 2], // trackpad-style 3:2 width:height
-      label: "STEERING ZONE",
+      height: startH,
+      label: "STEERING ZONE (RESIZE TEST — DRAG YELLOW CORNER)",
     });
+    this.wizController.element.style.width = startW + "px";
 
     this.wizController.onMove((data) => {
       this.pointerActive = data.active;
@@ -304,6 +329,155 @@ class MainScene extends Phaser.Scene {
         this.dismissHint();
       }
     });
+
+    this._setupResizeTestUI(startW, startH);
+  }
+
+  // Builds the drag handle + live readout + "copy ratio" button used to
+  // freely test control-box shapes against the real running game. All of
+  // this lives in TestInvaders only — it's plain DOM code layered on top
+  // of the controller's own element, not a controller.js feature.
+  _setupResizeTestUI(startW, startH) {
+    let boxW = startW;
+    let boxH = startH;
+
+    const handle = document.createElement("div");
+    handle.textContent = "⇲";
+    handle.title = "Drag to resize (test only)";
+    Object.assign(handle.style, {
+      position: "absolute",
+      right: "-3px",
+      bottom: "-3px",
+      width: "26px",
+      height: "26px",
+      borderRadius: "6px",
+      background: "#ffe066",
+      color: "#10121c",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: "15px",
+      fontWeight: "bold",
+      cursor: "nwse-resize",
+      zIndex: "40",
+      boxShadow: "0 0 8px rgba(255, 224, 102, 0.6)",
+      touchAction: "none",
+      userSelect: "none",
+    });
+    this.wizController.element.appendChild(handle);
+
+    const panel = document.createElement("div");
+    Object.assign(panel.style, {
+      textAlign: "center",
+      fontFamily: '"Courier New", monospace',
+      padding: "10px 12px 18px",
+    });
+
+    const readout = document.createElement("div");
+    Object.assign(readout.style, { fontSize: "13px", color: "#ffe066" });
+
+    const copyBtn = document.createElement("button");
+    copyBtn.textContent = "COPY CURRENT RATIO";
+    Object.assign(copyBtn.style, {
+      marginTop: "8px",
+      background: "#1a1c26",
+      color: "#ffe066",
+      border: "1px solid #ffe066",
+      borderRadius: "6px",
+      padding: "8px 14px",
+      fontFamily: "inherit",
+      fontSize: "12px",
+    });
+
+    const status = document.createElement("div");
+    Object.assign(status.style, { marginTop: "6px", fontSize: "11px", color: "#7a8090", minHeight: "14px" });
+
+    panel.appendChild(readout);
+    panel.appendChild(copyBtn);
+    panel.appendChild(status);
+    document.body.appendChild(panel);
+
+    const updateReadout = () => {
+      const ratio = boxH > 0 ? boxW / boxH : 0;
+      readout.textContent = Math.round(boxW) + " x " + Math.round(boxH) + "px — ratio " + ratio.toFixed(2) + ":1";
+    };
+    updateReadout();
+
+    let resizing = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragStartW = 0;
+    let dragStartH = 0;
+
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // don't let this reach the controller's own pointer handling
+      resizing = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragStartW = boxW;
+      dragStartH = boxH;
+      handle.setPointerCapture(e.pointerId);
+    });
+
+    handle.addEventListener("pointermove", (e) => {
+      if (!resizing) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      const maxW = Math.max(120, window.innerWidth - 40);
+      const maxH = Math.max(90, window.innerHeight - 260);
+      boxW = Math.min(maxW, Math.max(80, dragStartW + dx));
+      boxH = Math.min(maxH, Math.max(60, dragStartH + dy));
+      this.wizController.element.style.width = boxW + "px";
+      this.wizController.element.style.height = boxH + "px";
+      updateReadout();
+    });
+
+    handle.addEventListener("pointerup", () => {
+      resizing = false;
+    });
+    handle.addEventListener("pointercancel", () => {
+      resizing = false;
+    });
+
+    function simplifyRatio(w, h) {
+      const target = w / h;
+      let best = { num: Math.round(target), den: 1 };
+      let bestErr = Math.abs(target - best.num);
+      for (let den = 1; den <= 12; den++) {
+        const num = Math.round(target * den);
+        if (num <= 0) continue;
+        const err = Math.abs(target - num / den);
+        if (err < bestErr) {
+          best = { num, den };
+          bestErr = err;
+        }
+      }
+      function gcd(a, b) {
+        return b === 0 ? a : gcd(b, a % b);
+      }
+      const g = gcd(best.num, best.den) || 1;
+      return best.num / g + ":" + best.den / g;
+    }
+
+    copyBtn.addEventListener("click", () => {
+      const text = simplifyRatio(boxW, boxH);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            status.textContent = "Copied to clipboard: " + text;
+          })
+          .catch(() => {
+            status.textContent = "Ratio (copy failed, select manually): " + text;
+          });
+      } else {
+        status.textContent = "Ratio (clipboard unavailable): " + text;
+      }
+    });
+
+    this._resizeTestHandle = handle;
+    this._resizeTestPanel = panel;
   }
 
   // Small top-right speed control: "-" / readout / "+". Persists the chosen
