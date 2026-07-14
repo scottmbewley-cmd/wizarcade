@@ -380,6 +380,17 @@ class MainScene extends Phaser.Scene {
       })
       .setDepth(21);
 
+    // --- TEMP DEBUG OVERLAY (diagnostic only — safe to delete later) ---
+    this.debugText = this.add
+      .text(GAME_WIDTH - 10, 10, "FPS: --\nDELTA: --ms", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#ffffff",
+        align: "right",
+      })
+      .setOrigin(1, 0)
+      .setDepth(30);
+
     this.showControlHint();
 
     this.spawnWave();
@@ -545,6 +556,11 @@ class MainScene extends Phaser.Scene {
   }
 
   update(time, delta) {
+    // --- TEMP DEBUG OVERLAY (diagnostic only — safe to delete later) ---
+    this.debugText.setText(
+      "FPS: " + this.game.loop.actualFps.toFixed(1) + "\nDELTA: " + delta.toFixed(1) + "ms"
+    );
+
     if (this.gameOver) return;
 
     const dt = delta / 1000; // seconds since last frame — every rate-based
