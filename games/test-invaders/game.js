@@ -286,13 +286,14 @@ class MainScene extends Phaser.Scene {
     }
 
     this.wizController = new WizController({
-      target: document.body,
+      target: document.getElementById("game-frame"),
       dock: "flow",
       mode: "absolute",
       directions: { left: true, right: true },
       tap: false,
       rangeX: [0, GAME_WIDTH],
-      height: 100,
+      matchWidthOf: document.getElementById("game-container"),
+      aspectRatio: [3, 2], // trackpad-style 3:2 width:height
       label: "STEERING ZONE",
     });
 

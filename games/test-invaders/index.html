@@ -15,10 +15,28 @@
     overflow: hidden;
     touch-action: none;
     display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /*
+    #game-frame is the whole portrait unit — game canvas plus the
+    controller strip below it — kept at a fixed combined aspect ratio
+    (game 480:800 + a 3:2 strip = 3:7 width:height overall) and capped
+    to whichever of width/height the viewport is tighter on. This keeps
+    the game portrait-shaped and centered with letterboxing on wide
+    desktop screens instead of stretching across the full width.
+  */
+  #game-frame {
+    width: 100vw;
+    height: 100vh;
+    max-width: calc(100vh * 3 / 7);
+    max-height: calc(100vw * 7 / 3);
+    display: flex;
     flex-direction: column;
   }
   #game-container {
-    flex: 1 1 auto;
+    width: 100%;
+    aspect-ratio: 480 / 800;
     min-height: 0;
     display: flex;
     align-items: center;
@@ -27,7 +45,9 @@
 </style>
 </head>
 <body>
-  <div id="game-container"></div>
+  <div id="game-frame">
+    <div id="game-container"></div>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
   <script src="../../controller/controller.js"></script>
   <script src="game.js"></script>

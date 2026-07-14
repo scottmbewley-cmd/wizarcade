@@ -8,11 +8,12 @@
 // USAGE
 //   const controller = new WizController({
 //     mode: "absolute",                          // "absolute" | "relative"
-//     directions: { left: true, right: true },    // any combo of left/right/up/down
+//     directions: { left: true, right: true },    // any combo of the 8 below
 //     tap: false,                                  // enable tap-to-fire style input
 //     rangeX: [0, 480],                            // absolute mode: output range for x
 //     rangeY: [0, 800],                            // absolute mode: output range for y
-//     height: 100,                                 // strip height in px
+//     height: 100,                                 // strip height in px (ignored if
+//                                                   // aspectRatio is set — see below)
 //     label: "STEERING ZONE",                      // optional caption text
 //     dock: "fixed",                               // "fixed" (viewport-docked, default)
 //                                                   // | "flow" (normal page flow — use this
@@ -21,17 +22,32 @@
 //                                                   //   doesn't fill the full viewport, e.g.
 //                                                   //   inside a flex column layout)
 //     target: document.body,                       // element to append the strip into
+//     matchWidthOf: someElement,                    // continuously match this element's
+//                                                    // rendered width (via ResizeObserver) —
+//                                                    // use this to lock the strip's width to
+//                                                    // a game canvas's actual rendered size
+//     aspectRatio: [3, 2],                          // if set, height is derived from the
+//                                                    // strip's (matched or default) width
+//                                                    // using this width:height ratio —
+//                                                    // e.g. [3, 2] gives a trackpad shape
 //   });
 //
 //   controller.onMove((data) => { ... });
 //   controller.onTap((data) => { ... });
 //   controller.destroy();
 //
+// directions supports all 8 compass points: left, right, up, down,
+// upLeft, upRight, downLeft, downRight — each independently on/off.
+// A diagonal is reported only if ITS OWN flag is enabled; it does not
+// require its component cardinals to also be enabled (e.g. a game can
+// enable only upLeft/downRight for diagonal-only movement).
+//
 // onMove PAYLOAD (always this shape; unused fields are null/false):
 //   {
 //     mode: "absolute" | "relative",
 //     active: boolean,                // true while a touch is down on the strip
-//     left, right, up, down: boolean, // discrete direction flags, only for enabled axes
+//     left, right, up, down,
+//     upLeft, upRight, downLeft, downRight: boolean,  // only for enabled directions
 //     x, y: number | null,            // absolute mode: mapped position in rangeX/rangeY
 //     dx, dy: number | null,          // relative mode: -1..1 deflection from touch-start
 //   }
@@ -43,6 +59,8 @@
 
 (function (global) {
   "use strict";
+
+  const ALL_DIRECTIONS = ["left", "right", "up", "down", "upLeft", "upRight", "downLeft", "downRight"];
 
   function clamp(v, min, max) {
     return Math.min(max, Math.max(min, v));
@@ -65,6 +83,8 @@
     tapMaxMovementPx: 14,
     joystickRadius: 46,
     deadzone: 0.2,
+    matchWidthOf: null,
+    aspectRatio: null,
   };
 
   let stylesInjected = false;
@@ -106,10 +126,11 @@
 
       options = options || {};
       this.options = Object.assign({}, DEFAULTS, options);
-      this.options.directions = Object.assign(
-        { left: false, right: false, up: false, down: false },
-        options.directions || {}
-      );
+      const dirs = {};
+      ALL_DIRECTIONS.forEach((d) => {
+        dirs[d] = !!(options.directions && options.directions[d]);
+      });
+      this.options.directions = dirs;
 
       this._moveCallbacks = [];
       this._tapCallbacks = [];
@@ -122,6 +143,7 @@
 
       this._buildDom();
       this._bindEvents();
+      this._bindResize();
     }
 
     onMove(cb) {
@@ -136,6 +158,7 @@
 
     destroy() {
       this._unbindEvents();
+      if (this._resizeObserver) this._resizeObserver.disconnect();
       clearTimeout(this._tapFlashTimer);
       if (this.element && this.element.parentNode) {
         this.element.parentNode.removeChild(this.element);
@@ -143,34 +166,63 @@
     }
 
     _emitMove(data) {
-      const payload = Object.assign(
-        {
-          mode: this.options.mode,
-          active: false,
-          left: false,
-          right: false,
-          up: false,
-          down: false,
-          x: null,
-          y: null,
-          dx: null,
-          dy: null,
-        },
-        data
-      );
-      this._moveCallbacks.forEach((cb) => cb(payload));
+      const base = {
+        mode: this.options.mode,
+        active: false,
+        x: null,
+        y: null,
+        dx: null,
+        dy: null,
+      };
+      ALL_DIRECTIONS.forEach((d) => (base[d] = false));
+      this._moveCallbacks.forEach((cb) => cb(Object.assign(base, data)));
     }
 
     _emitTap(data) {
       this._tapCallbacks.forEach((cb) => cb(data));
     }
 
+    // --- sizing: fixed height, OR width-matched + aspect-ratio derived ---
+
+    _currentWidthPx() {
+      if (this.options.matchWidthOf) {
+        return this.options.matchWidthOf.getBoundingClientRect().width || 0;
+      }
+      return this.element ? this.element.getBoundingClientRect().width : 0;
+    }
+
+    _syncSize() {
+      if (!this.element) return;
+
+      if (this.options.matchWidthOf) {
+        const w = this._currentWidthPx();
+        if (w > 0) this.element.style.width = w + "px";
+      }
+
+      if (this.options.aspectRatio) {
+        const w = this._currentWidthPx();
+        const [aw, ah] = this.options.aspectRatio;
+        if (w > 0) this.element.style.height = (w * (ah / aw)) + "px";
+      }
+    }
+
+    _bindResize() {
+      if (this.options.matchWidthOf && typeof ResizeObserver !== "undefined") {
+        this._resizeObserver = new ResizeObserver(() => this._syncSize());
+        this._resizeObserver.observe(this.options.matchWidthOf);
+      } else if (this.options.aspectRatio) {
+        // No element to match, but height still derives from our own
+        // rendered width (e.g. a "flow" strip at 100% of its parent).
+        window.addEventListener("resize", () => this._syncSize());
+      }
+    }
+
     _buildDom() {
       const dirs = this.options.directions;
       const root = document.createElement("div");
       root.className = "wiz-ctrl";
+      root.style.width = this.options.matchWidthOf ? "0px" : "100%";
       root.style.height = this.options.height + "px";
-      root.style.width = "100%";
 
       if (this.options.dock === "fixed") {
         root.style.position = "fixed";
@@ -190,8 +242,11 @@
         root.appendChild(label);
       }
 
+      const needsX = dirs.left || dirs.right || dirs.upLeft || dirs.upRight || dirs.downLeft || dirs.downRight;
+      const needsY = dirs.up || dirs.down || dirs.upLeft || dirs.upRight || dirs.downLeft || dirs.downRight;
+
       if (this.options.mode === "absolute") {
-        if (dirs.left || dirs.right) {
+        if (needsX) {
           const track = document.createElement("div");
           track.className = "wiz-ctrl-track-h";
           root.appendChild(track);
@@ -200,7 +255,7 @@
           this._markerH.style.top = "50%";
           root.appendChild(this._markerH);
         }
-        if (dirs.up || dirs.down) {
+        if (needsY) {
           const track = document.createElement("div");
           track.className = "wiz-ctrl-track-v";
           root.appendChild(track);
@@ -224,12 +279,25 @@
         this._joyBase.appendChild(this._joyNub);
         root.appendChild(this._joyBase);
 
-        const arrowMap = { left: "◀", right: "▶", up: "▲", down: "▼" };
+        const arrowMap = {
+          left: "◀",
+          right: "▶",
+          up: "▲",
+          down: "▼",
+          upLeft: "◤",
+          upRight: "◥",
+          downLeft: "◣",
+          downRight: "◢",
+        };
         const arrowStyle = {
           left: { left: "10px", top: "50%", transform: "translateY(-50%)" },
           right: { right: "10px", top: "50%", transform: "translateY(-50%)" },
           up: { left: "50%", top: "6px", transform: "translateX(-50%)" },
           down: { left: "50%", bottom: "6px", transform: "translateX(-50%)" },
+          upLeft: { left: "10px", top: "10px" },
+          upRight: { right: "10px", top: "10px" },
+          downLeft: { left: "10px", bottom: "10px" },
+          downRight: { right: "10px", bottom: "10px" },
         };
         Object.keys(arrowMap).forEach((dir) => {
           if (!dirs[dir]) return;
@@ -249,6 +317,8 @@
 
       (this.options.target || document.body).appendChild(root);
       this.element = root;
+
+      this._syncSize();
     }
 
     _bindEvents() {
@@ -337,43 +407,64 @@
       this._tapFlashTimer = setTimeout(() => this._tapFlash.classList.remove("flash"), 250);
     }
 
+    // Builds the 8 direction flags from raw left/right/up/down positional
+    // booleans. A diagonal fires only if it has its own flag enabled — it
+    // does NOT require its component cardinals to also be enabled.
+    _buildDirectionFlags(leftOn, rightOn, upOn, downOn) {
+      const dirs = this.options.directions;
+      return {
+        left: dirs.left && leftOn,
+        right: dirs.right && rightOn,
+        up: dirs.up && upOn,
+        down: dirs.down && downOn,
+        upLeft: dirs.upLeft && upOn && leftOn,
+        upRight: dirs.upRight && upOn && rightOn,
+        downLeft: dirs.downLeft && downOn && leftOn,
+        downRight: dirs.downRight && downOn && rightOn,
+      };
+    }
+
     _processPosition(x, y) {
       const dirs = this.options.directions;
       const rect = this.element.getBoundingClientRect();
+      const needsX = dirs.left || dirs.right || dirs.upLeft || dirs.upRight || dirs.downLeft || dirs.downRight;
+      const needsY = dirs.up || dirs.down || dirs.upLeft || dirs.upRight || dirs.downLeft || dirs.downRight;
 
       if (this.options.mode === "absolute") {
         const payload = { active: true };
+        let leftOn = false;
+        let rightOn = false;
+        let upOn = false;
+        let downOn = false;
 
-        if (dirs.left || dirs.right) {
+        if (needsX) {
           const nx = clamp(x / rect.width, 0, 1);
           payload.x = mapRange(nx, this.options.rangeX[0], this.options.rangeX[1]);
-          payload.left = nx < 0.5;
-          payload.right = nx >= 0.5;
+          leftOn = nx < 0.5;
+          rightOn = nx >= 0.5;
           if (this._markerH) {
             this._markerH.style.left = clamp(x, 0, rect.width) + "px";
             this._markerH.classList.add("active");
           }
         }
-        if (dirs.up || dirs.down) {
+        if (needsY) {
           const ny = clamp(y / rect.height, 0, 1);
           payload.y = mapRange(ny, this.options.rangeY[0], this.options.rangeY[1]);
-          payload.up = ny < 0.5;
-          payload.down = ny >= 0.5;
+          upOn = ny < 0.5;
+          downOn = ny >= 0.5;
           if (this._markerV) {
             this._markerV.style.top = clamp(y, 0, rect.height) + "px";
             this._markerV.classList.add("active");
           }
         }
 
+        Object.assign(payload, this._buildDirectionFlags(leftOn, rightOn, upOn, downOn));
         this._emitMove(payload);
       } else {
         // relative / virtual-joystick mode
         const r = this.options.joystickRadius;
-        let offX = x - this._joyOriginX;
-        let offY = y - this._joyOriginY;
-
-        if (!(dirs.left || dirs.right)) offX = 0;
-        if (!(dirs.up || dirs.down)) offY = 0;
+        let offX = needsX ? x - this._joyOriginX : 0;
+        let offY = needsY ? y - this._joyOriginY : 0;
 
         const dist = Math.hypot(offX, offY);
         const clampedDist = Math.min(dist, r);
@@ -381,27 +472,28 @@
         const nubX = dist > 0 ? Math.cos(angle) * clampedDist : 0;
         const nubY = dist > 0 ? Math.sin(angle) * clampedDist : 0;
 
-        let dx = r > 0 ? clamp(nubX / r, -1, 1) : 0;
-        let dy = r > 0 ? clamp(nubY / r, -1, 1) : 0;
-        if (!dirs.left && dx < 0) dx = 0;
-        if (!dirs.right && dx > 0) dx = 0;
-        if (!dirs.up && dy < 0) dy = 0;
-        if (!dirs.down && dy > 0) dy = 0;
+        const dx = r > 0 ? clamp(nubX / r, -1, 1) : 0;
+        const dy = r > 0 ? clamp(nubY / r, -1, 1) : 0;
 
         if (this._joyNub) {
           this._joyNub.style.transform = "translate(calc(-50% + " + nubX + "px), calc(-50% + " + nubY + "px))";
         }
 
         const dz = this.options.deadzone;
-        this._emitMove({
-          active: true,
-          left: dx < -dz,
-          right: dx > dz,
-          up: dy < -dz,
-          down: dy > dz,
-          dx: dirs.left || dirs.right ? dx : null,
-          dy: dirs.up || dirs.down ? dy : null,
-        });
+        const leftOn = dx < -dz;
+        const rightOn = dx > dz;
+        const upOn = dy < -dz;
+        const downOn = dy > dz;
+
+        const payload = Object.assign(
+          {
+            active: true,
+            dx: needsX ? dx : null,
+            dy: needsY ? dy : null,
+          },
+          this._buildDirectionFlags(leftOn, rightOn, upOn, downOn)
+        );
+        this._emitMove(payload);
       }
     }
   }

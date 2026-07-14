@@ -41,21 +41,30 @@
     border-radius: 6px;
     touch-action: manipulation;
   }
+  .compass {
+    display: grid;
+    grid-template-columns: repeat(3, 84px);
+    grid-template-rows: repeat(3, 44px);
+    gap: 8px;
+    margin-top: 18px;
+  }
   .row {
     display: flex;
     gap: 10px;
-    margin-top: 18px;
+    margin-top: 14px;
     flex-wrap: wrap;
   }
   .chip {
-    padding: 8px 14px;
+    padding: 8px 10px;
     border: 1px solid rgba(77, 216, 255, 0.35);
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 12px;
     opacity: 0.4;
     transition: opacity 0.1s ease, background 0.1s ease;
     display: flex;
     align-items: center;
+    justify-content: center;
+    text-align: center;
   }
   .chip.on {
     opacity: 1;
@@ -89,12 +98,16 @@
 
     <button id="modeToggle">MODE: ABSOLUTE (tap to switch)</button>
 
-    <div class="row">
-      <div class="chip" id="chip-left">LEFT</div>
-      <div class="chip" id="chip-right">RIGHT</div>
+    <div class="compass">
+      <div class="chip" id="chip-upLeft">UP-LEFT</div>
       <div class="chip" id="chip-up">UP</div>
-      <div class="chip" id="chip-down">DOWN</div>
+      <div class="chip" id="chip-upRight">UP-RIGHT</div>
+      <div class="chip" id="chip-left">LEFT</div>
       <div class="chip" id="chip-tap">TAP<span class="tapdot" id="tapdot"></span></div>
+      <div class="chip" id="chip-right">RIGHT</div>
+      <div class="chip" id="chip-downLeft">DOWN-LEFT</div>
+      <div class="chip" id="chip-down">DOWN</div>
+      <div class="chip" id="chip-downRight">DOWN-RIGHT</div>
     </div>
 
     <div class="values">
@@ -118,7 +131,16 @@
 
       controller = new WizController({
         mode: mode,
-        directions: { left: true, right: true, up: true, down: true },
+        directions: {
+          left: true,
+          right: true,
+          up: true,
+          down: true,
+          upLeft: true,
+          upRight: true,
+          downLeft: true,
+          downRight: true,
+        },
         tap: true,
         rangeX: [0, 480],
         rangeY: [0, 800],
@@ -134,6 +156,10 @@
         setChip("chip-right", data.right);
         setChip("chip-up", data.up);
         setChip("chip-down", data.down);
+        setChip("chip-upLeft", data.upLeft);
+        setChip("chip-upRight", data.upRight);
+        setChip("chip-downLeft", data.downLeft);
+        setChip("chip-downRight", data.downRight);
 
         document.getElementById("val-active").textContent = "active: " + data.active;
         document.getElementById("val-xy").textContent =
