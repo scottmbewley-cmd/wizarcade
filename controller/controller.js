@@ -93,8 +93,8 @@
     stylesInjected = true;
     const style = document.createElement("style");
     style.textContent = [
-      ".wiz-ctrl { box-sizing: border-box; background: rgba(12, 13, 18, 0.88);",
-      "  border-top: 2px solid rgba(77, 216, 255, 0.55); touch-action: none;",
+      ".wiz-ctrl { box-sizing: border-box; background: rgba(26, 28, 38, 0.92);",
+      "  border: 2px solid rgba(77, 216, 255, 0.6); border-radius: 14px; touch-action: none;",
       "  -webkit-tap-highlight-color: transparent; user-select: none;",
       '  font-family: "Courier New", monospace; overflow: hidden; }',
       ".wiz-ctrl-label { position: absolute; top: 6px; left: 0; right: 0; text-align: center;",
