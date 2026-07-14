@@ -16,21 +16,24 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
+    padding-top: 12px;
   }
   /*
-    #game-frame is the whole portrait unit — game canvas plus the
-    controller strip below it — kept at a fixed combined aspect ratio
-    (game 480:800 + a 3:2 strip = 3:7 width:height overall) and capped
-    to whichever of width/height the viewport is tighter on. This keeps
-    the game portrait-shaped and centered with letterboxing on wide
-    desktop screens instead of stretching across the full width.
+    #game-frame holds just the game canvas, portrait-locked to its
+    480:800 aspect ratio and capped to whichever of width/height the
+    viewport is tighter on (letterboxed on wide desktop screens instead
+    of stretching). The control box now floats independently below it
+    via controller.js's player-adjustable layout (position: absolute,
+    not a flex-flow participant), so a fixed 240px is reserved below
+    the canvas here for its default position/size and any player-chosen
+    resize — controller.js sets #game-frame to position:relative itself.
   */
   #game-frame {
     width: 100vw;
-    height: 100vh;
-    max-width: calc(100vh * 3 / 7);
-    max-height: calc(100vw * 7 / 3);
+    height: calc(100vh - 240px);
+    max-width: calc((100vh - 240px) * 480 / 800);
+    max-height: calc(100vw * 800 / 480);
     display: flex;
     flex-direction: column;
   }
