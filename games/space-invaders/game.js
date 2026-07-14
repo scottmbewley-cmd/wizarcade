@@ -31,6 +31,38 @@ const ALIEN_BULLET_SPEED = 260;
 
 const STAR_SCROLL_SPEED = 24; // px/s
 
+// --- Player-facing speed multiplier (persisted per device via localStorage) ---
+// Scales every rate-based movement in the scene uniformly: formation speed,
+// player keyboard movement, bullet speed, and starfield scroll. Lets a
+// player tune overall game feel per device without touching balance.
+const SPEED_STORAGE_KEY = "wizarcade-space-invaders-speed";
+const SPEED_MIN = 0.5;
+const SPEED_MAX = 1.5;
+const SPEED_STEP = 0.1;
+const SPEED_DEFAULT = 1.0;
+
+function loadSpeedMultiplier() {
+  try {
+    const raw = localStorage.getItem(SPEED_STORAGE_KEY);
+    if (raw === null) return SPEED_DEFAULT;
+    const val = parseFloat(raw);
+    if (Number.isFinite(val)) {
+      return Phaser.Math.Clamp(val, SPEED_MIN, SPEED_MAX);
+    }
+  } catch (e) {
+    // localStorage unavailable (private browsing, etc.) — fall back silently.
+  }
+  return SPEED_DEFAULT;
+}
+
+function saveSpeedMultiplier(value) {
+  try {
+    localStorage.setItem(SPEED_STORAGE_KEY, String(value));
+  } catch (e) {
+    // Persistence is a nice-to-have, not required for play.
+  }
+}
+
 // --- Classic formation constants ---
 const FORMATION_ROWS = 5;
 const FORMATION_COLS = 8;
@@ -258,6 +290,68 @@ class MainScene extends Phaser.Scene {
     }
   }
 
+  // Small top-right speed control: "-" / readout / "+". Persists the chosen
+  // multiplier to localStorage so each device remembers its own preference.
+  createSpeedControl() {
+    const y = 23;
+    const btnSize = 22;
+    const readoutWidth = 86;
+
+    const plusX = GAME_WIDTH - 10 - btnSize / 2;
+    const readoutRightX = plusX - btnSize / 2 - 6;
+    const minusX = readoutRightX - readoutWidth - 6 - btnSize / 2;
+
+    const panelLeft = minusX - btnSize / 2 - 6;
+    const panelRight = plusX + btnSize / 2 + 6;
+    this.add
+      .rectangle((panelLeft + panelRight) / 2, y, panelRight - panelLeft, 30, 0x10121c, 0.55)
+      .setStrokeStyle(1, 0x33ff66, 0.3)
+      .setDepth(29);
+
+    const minusBtn = this.add
+      .rectangle(minusX, y, btnSize, btnSize, 0x1a1c26, 0.9)
+      .setStrokeStyle(1, 0x33ff66, 0.6)
+      .setDepth(30)
+      .setInteractive({ useHandCursor: true });
+    this.add
+      .text(minusX, y, "-", { fontFamily: "monospace", fontSize: "16px", fontStyle: "bold", color: "#33ff66" })
+      .setOrigin(0.5)
+      .setDepth(31);
+
+    const plusBtn = this.add
+      .rectangle(plusX, y, btnSize, btnSize, 0x1a1c26, 0.9)
+      .setStrokeStyle(1, 0x33ff66, 0.6)
+      .setDepth(30)
+      .setInteractive({ useHandCursor: true });
+    this.add
+      .text(plusX, y, "+", { fontFamily: "monospace", fontSize: "16px", fontStyle: "bold", color: "#33ff66" })
+      .setOrigin(0.5)
+      .setDepth(31);
+
+    this.speedReadoutText = this.add
+      .text(readoutRightX, y, this.formatSpeedLabel(), {
+        fontFamily: '"Courier New", monospace',
+        fontSize: "12px",
+        color: "#33ff66",
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(31);
+
+    minusBtn.on("pointerdown", () => this.adjustSpeedMultiplier(-SPEED_STEP));
+    plusBtn.on("pointerdown", () => this.adjustSpeedMultiplier(SPEED_STEP));
+  }
+
+  formatSpeedLabel() {
+    return "SPEED " + this.speedMultiplier.toFixed(1) + "x";
+  }
+
+  adjustSpeedMultiplier(delta) {
+    const next = Phaser.Math.Clamp(Math.round((this.speedMultiplier + delta) * 10) / 10, SPEED_MIN, SPEED_MAX);
+    this.speedMultiplier = next;
+    saveSpeedMultiplier(next);
+    this.speedReadoutText.setText(this.formatSpeedLabel());
+  }
+
   showControlHint() {
     const box = this.add
       .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 300, 90, 0x000000, 0.55)
@@ -329,6 +423,7 @@ class MainScene extends Phaser.Scene {
     this.waveNumber = 1;
     this.pointerActive = false;
     this.pointerX = GAME_WIDTH / 2;
+    this.speedMultiplier = loadSpeedMultiplier();
 
     // Player
     this.player = this.physics.add.image(GAME_WIDTH / 2, PLAYER_Y, "playerShip");
@@ -380,16 +475,7 @@ class MainScene extends Phaser.Scene {
       })
       .setDepth(21);
 
-    // --- TEMP DEBUG OVERLAY (diagnostic only — safe to delete later) ---
-    this.debugText = this.add
-      .text(GAME_WIDTH - 10, 10, "FPS: --\nDELTA: --ms", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#ffffff",
-        align: "right",
-      })
-      .setOrigin(1, 0)
-      .setDepth(30);
+    this.createSpeedControl();
 
     this.showControlHint();
 
@@ -484,7 +570,9 @@ class MainScene extends Phaser.Scene {
 
     // Classic escalation: fewer aliens left in the formation -> faster
     // movement. Inversely proportional to how much of the wave remains.
-    const speed = f.baseSpeed * (f.totalCount / aliveCount);
+    // Scaled by the player's device speed preference, like every other
+    // rate-based movement in the scene.
+    const speed = f.baseSpeed * (f.totalCount / aliveCount) * this.speedMultiplier;
     f.originX += f.dir * speed * dt;
     this.syncFormationPositions();
 
@@ -520,7 +608,7 @@ class MainScene extends Phaser.Scene {
         // every member's body the moment it's added via group.add(), which
         // would otherwise silently overwrite any velocity set beforehand.
         this.alienBullets.add(bullet);
-        bullet.body.setVelocityY(ALIEN_BULLET_SPEED);
+        bullet.body.setVelocityY(ALIEN_BULLET_SPEED * this.speedMultiplier);
       }
     });
   }
@@ -534,9 +622,9 @@ class MainScene extends Phaser.Scene {
     }
 
     if (this.cursors.left.isDown || this.keyA.isDown) {
-      targetX = this.player.x - PLAYER_KEY_SPEED * dt;
+      targetX = this.player.x - PLAYER_KEY_SPEED * this.speedMultiplier * dt;
     } else if (this.cursors.right.isDown || this.keyD.isDown) {
-      targetX = this.player.x + PLAYER_KEY_SPEED * dt;
+      targetX = this.player.x + PLAYER_KEY_SPEED * this.speedMultiplier * dt;
     }
 
     this.player.x = Phaser.Math.Clamp(targetX, halfW, GAME_WIDTH - halfW);
@@ -552,22 +640,17 @@ class MainScene extends Phaser.Scene {
     bullet.setDepth(3);
     // See note in alienFireTick(): add to group first, THEN set velocity.
     this.playerBullets.add(bullet);
-    bullet.body.setVelocityY(-PLAYER_BULLET_SPEED);
+    bullet.body.setVelocityY(-PLAYER_BULLET_SPEED * this.speedMultiplier);
   }
 
   update(time, delta) {
-    // --- TEMP DEBUG OVERLAY (diagnostic only — safe to delete later) ---
-    this.debugText.setText(
-      "FPS: " + this.game.loop.actualFps.toFixed(1) + "\nDELTA: " + delta.toFixed(1) + "ms"
-    );
-
     if (this.gameOver) return;
 
     const dt = delta / 1000; // seconds since last frame — every rate-based
     // movement in this scene is multiplied by dt, never a fixed per-frame
     // step, so speeds hold steady regardless of device refresh rate.
 
-    this.starTile.tilePositionY -= STAR_SCROLL_SPEED * dt;
+    this.starTile.tilePositionY -= STAR_SCROLL_SPEED * this.speedMultiplier * dt;
 
     this.updatePlayerMovement(dt);
     this.autoFire(time);
