@@ -352,11 +352,33 @@
         const anchorRect = this.options.anchorBelow.getBoundingClientRect();
         minY = anchorRect.bottom - targetRect.top;
       }
+      // anchorBelow is a PREFERENCE to keep the box off the canvas/HUD, not
+      // a license to push it off-screen — if the anchor leaves little or no
+      // room below it within target (e.g. the canvas fills the target's
+      // entire height, as happens once target has no reserved footer
+      // space), cap minY so the box still has somewhere fully on-screen to
+      // land, overlapping the anchor's bottom edge instead of vanishing
+      // past target's own bounds.
+      minY = Math.min(minY, Math.max(0, targetRect.height - ch));
 
       const cx = clamp(x, 0, Math.max(0, targetRect.width - cw));
       const cy = clamp(y, minY, Math.max(minY, targetRect.height - ch));
 
       return { x: cx, y: cy, w: cw, h: ch };
+    }
+
+    // Defense-in-depth for _clampLayout: a saved layout can only ever be
+    // nudged back within bounds by clamping, never un-corrupted. If it's
+    // NaN/Infinity (malformed storage) or would still leave the box mostly
+    // or fully outside target's visible area even after clamping, it's not
+    // trustworthy — caller should fall back to the default layout instead.
+    _isLayoutMostlyVisible(layout, targetRect) {
+      if (!layout) return false;
+      const { x, y, w, h } = layout;
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return false;
+      const visibleW = Math.max(0, Math.min(x + w, targetRect.width) - Math.max(x, 0));
+      const visibleH = Math.max(0, Math.min(y + h, targetRect.height) - Math.max(y, 0));
+      return (visibleW * visibleH) / (w * h) >= 0.5;
     }
 
     _applyLayout() {
@@ -528,12 +550,25 @@
       this.element = root;
 
       if (this.options.adjustable) {
-        this._layout = this._loadLayout();
-        if (!this._layout) {
-          this._layout = this._computeDefaultLayout();
-        } else {
-          this._layout = this._clampLayout(this._layout.x, this._layout.y, this._layout.w, this._layout.h);
+        // Always load THEN clamp against the CURRENT target bounds,
+        // unconditionally, on this very first paint — before any
+        // resize/drag interaction ever happens. A saved layout from a
+        // previous session (different viewport, different page CSS, etc.)
+        // is never trusted as-is.
+        const savedLayout = this._loadLayout();
+        let layout = savedLayout && this._clampLayout(savedLayout.x, savedLayout.y, savedLayout.w, savedLayout.h);
+
+        // Safety net: clamping can only nudge a saved layout back within
+        // bounds, it can't un-corrupt it. If it's still mostly/fully
+        // outside the visible frame after clamping (garbage coordinates,
+        // or a frame that changed shape enough that the old box no longer
+        // fits anywhere sane), don't trust it — start fresh instead of
+        // showing a broken/invisible box.
+        if (!layout || !this._isLayoutMostlyVisible(layout, this._targetRect())) {
+          layout = this._computeDefaultLayout();
         }
+        this._layout = layout;
+
         this._applyLayout();
         this._buildResizeHandle();
 

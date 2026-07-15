@@ -135,10 +135,22 @@
         var s = strip.getBoundingClientRect();
         var ratio = s.height > 0 ? (s.width / s.height).toFixed(2) : "--";
 
+        // BOX x/y diagnostic — position of the control strip relative to
+        // #page-frame (the same coordinate space its saved layout is
+        // stored/clamped in), not the viewport. Lets an off-screen/clipped
+        // box be confirmed directly instead of inferred from CANVAS/STRIP
+        // size alone (which stay non-zero even when the box is fully
+        // outside the visible frame).
+        var frame = document.getElementById("page-frame");
+        var f = frame ? frame.getBoundingClientRect() : null;
+        var boxX = f ? Math.round(s.left - f.left) : "?";
+        var boxY = f ? Math.round(s.top - f.top) : "?";
+
         readout.textContent =
           "CANVAS: " + Math.round(c.width) + "x" + Math.round(c.height) + "px" +
           "  |  STRIP: " + Math.round(s.width) + "x" + Math.round(s.height) + "px" +
           "  |  STRIP RATIO: " + ratio +
+          "  |  BOX: " + boxX + "," + boxY + " " + Math.round(s.width) + "x" + Math.round(s.height) +
           "  |  CANVASES: " + canvasCount;
       }
 
