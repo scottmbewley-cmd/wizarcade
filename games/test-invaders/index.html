@@ -52,30 +52,28 @@
     justify-content: center;
   }
   /*
-    #page-frame is the WizController's `target` — it reserves room for
-    both the game canvas (#game-container, aspect-locked to 480:800) AND
-    the control box that floats below it (player-adjustable, position:
-    absolute within this element, sized/capped in game.js's
-    createController()). RESERVE_PX (340, matching the box's max
-    possible footprint plus gaps) is folded into BOTH the max-width and
-    max-height formulas below, so #page-frame's own box always fits the
-    viewport exactly — canvas height + box's reserved space always sums
-    to no more than the visible viewport height, on any screen size, with
-    no scrolling needed. controller.js sets #page-frame to position:relative
-    itself.
+    #page-frame is the WizController's `target` — it holds the game canvas
+    (#game-container, aspect-locked to 480:800) and the control box, which
+    is player-draggable/resizable (position: absolute within this element,
+    sized/capped in game.js's createController()) and freely OVERLAPS the
+    play area rather than needing dedicated space below the canvas — so
+    #page-frame no longer reserves any fixed footer height for it. Canvas
+    sizing is now standard 480:800 letterboxing against the full visible
+    viewport, no artificial shrinkage. controller.js sets #page-frame to
+    position:relative itself.
 
     Sized against --vvh/--vvw (kept live by window.visualViewport in the
     <script> above) instead of raw 100vh/100vw: on iOS Safari the raw vh
     unit does not reliably track the actually-visible area once the address
     bar's show/hide animation is factored in, which is what was cutting the
-    control box off-screen. The var() fallback (100vh/100vw) only matters on
+    page off-screen. The var() fallback (100vh/100vw) only matters on
     browsers with no JS/visualViewport support.
   */
   #page-frame {
     width: var(--vvw, 100vw);
     height: var(--vvh, 100vh);
-    max-width: calc((var(--vvh, 100vh) - 340px) * 480 / 800);
-    max-height: calc(var(--vvw, 100vw) * 800 / 480 + 340px);
+    max-width: calc(var(--vvh, 100vh) * 480 / 800);
+    max-height: calc(var(--vvw, 100vw) * 800 / 480);
   }
   #game-container {
     width: 100%;
@@ -122,6 +120,15 @@
       function update() {
         var canvas = document.querySelector("#game-container canvas");
         var strip = document.querySelector(".wiz-ctrl");
+        // Ghost-ship diagnostic: how many <canvas> elements actually exist
+        // in the DOM right now. Should always read 1 — if it's ever >1,
+        // more than one Phaser.Game instance/canvas got created, which
+        // would fully explain a duplicate-looking ship. Read independently
+        // of the canvas/strip guard below so it still reports even before
+        // either exists.
+        var canvasCount = document.querySelectorAll("canvas").length;
+        readout.textContent = "CANVASES: " + canvasCount;
+
         if (!canvas || !strip) return;
 
         var c = canvas.getBoundingClientRect();
@@ -131,7 +138,8 @@
         readout.textContent =
           "CANVAS: " + Math.round(c.width) + "x" + Math.round(c.height) + "px" +
           "  |  STRIP: " + Math.round(s.width) + "x" + Math.round(s.height) + "px" +
-          "  |  STRIP RATIO: " + ratio;
+          "  |  STRIP RATIO: " + ratio +
+          "  |  CANVASES: " + canvasCount;
       }
 
       window.addEventListener("load", update);

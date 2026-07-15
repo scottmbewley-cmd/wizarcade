@@ -309,9 +309,10 @@ class MainScene extends Phaser.Scene {
       anchorBelow: document.getElementById("game-container"),
       minWidth: 140,
       minHeight: 90,
-      // Capped well below #page-frame's reserved box-space (340px, see
-      // index.html) so the box can never grow into a size that would
-      // force the page to scroll to fit it.
+      // Just a sane upper bound on the box's own size — it freely overlaps
+      // the play area (no reserved footer space in #page-frame, see
+      // index.html), and controller.js's own _clampLayout already keeps it
+      // within #page-frame's actual bounds regardless of this cap.
       maxWidth: 400,
       maxHeight: 300,
     });
@@ -449,6 +450,16 @@ class MainScene extends Phaser.Scene {
   }
 
   create() {
+    // Ghost-ship diagnostic: logs every single time create() runs, with a
+    // timestamp and the live <canvas> count. If create() is ever called
+    // more than once without an intervening "GAME OVER"/retry, or the
+    // canvas count is ever >1, this is the smoking gun — expected output
+    // is exactly one line per real (re)start, canvases: 1.
+    console.log(
+      "[TestInvaders] create() called at " + new Date().toISOString() +
+      " — <canvas> elements in DOM: " + document.querySelectorAll("canvas").length
+    );
+
     this.buildTextures();
     this.createBackground();
 
@@ -472,6 +483,15 @@ class MainScene extends Phaser.Scene {
     this.player.body.setSize(PLAYER_SIZE, PLAYER_SIZE, true);
     this.player.body.setCollideWorldBounds(true);
     this.player.setDepth(5);
+
+    // Ghost-ship diagnostic (cont.): count every "playerShip"-textured
+    // object actually in this scene's display list right now — should
+    // always read 1. Catches the case where the destroy-before-recreate
+    // guard above somehow didn't run/didn't take effect.
+    const playerLikeCount = this.children.list.filter(
+      (o) => o.texture && o.texture.key === "playerShip"
+    ).length;
+    console.log("[TestInvaders] playerShip objects in scene after create(): " + playerLikeCount);
 
     // Groups
     this.playerBullets = this.physics.add.group();
