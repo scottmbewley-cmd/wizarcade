@@ -284,12 +284,17 @@ class MainScene extends Phaser.Scene {
   // pointer handlers.
   //
   // Uses controller.js's built-in player-adjustable layout feature
-  // (adjustable:true): the box starts at a sensible default size,
-  // centered just below the canvas, and the player can drag/resize it
-  // via the settings icon controller.js renders automatically — see
-  // /controller/controller.js's top-of-file usage comment for the full
-  // adjustable API. Drag/resize/persistence/bounds are all handled by
-  // the module itself; this is just the config wiring.
+  // (adjustable:true). No anchorBelow here on purpose: the box's default
+  // landing spot still sits just below the canvas, but that's now handled
+  // entirely by #page-frame's own CSS reserving room sized to the box's
+  // live height (see index.html's --wiz-ctrl-height comment) — NOT by a
+  // hard "can't drag above the canvas" floor. That means the player is
+  // free to drag the box anywhere within #page-frame, including
+  // deliberately overlapping the canvas, while the automatic default
+  // still starts it cleanly stacked below. See /controller/controller.js's
+  // top-of-file usage comment for the full adjustable API. Drag/resize/
+  // persistence/bounds are all handled by the module itself; this is
+  // just the config wiring.
   createController() {
     if (this.wizController) {
       this.wizController.destroy(); // guard against duplicate strips/icons on scene.restart()
@@ -306,12 +311,11 @@ class MainScene extends Phaser.Scene {
       storageKey: "wizarcade-test-invaders-layout",
       defaultWidth: 227,
       defaultHeight: 153,
-      anchorBelow: document.getElementById("game-container"),
       minWidth: 140,
       minHeight: 90,
-      // Just a sane upper bound on the box's own size — it freely overlaps
-      // the play area (no reserved footer space in #page-frame, see
-      // index.html), and controller.js's own _clampLayout already keeps it
+      // Just a sane upper bound on the box's own size — the player can
+      // freely drag/resize it anywhere within #page-frame (including over
+      // the canvas), and controller.js's own _clampLayout already keeps it
       // within #page-frame's actual bounds regardless of this cap.
       maxWidth: 400,
       maxHeight: 300,

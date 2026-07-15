@@ -53,14 +53,27 @@
   }
   /*
     #page-frame is the WizController's `target` — it holds the game canvas
-    (#game-container, aspect-locked to 480:800) and the control box, which
-    is player-draggable/resizable (position: absolute within this element,
-    sized/capped in game.js's createController()) and freely OVERLAPS the
-    play area rather than needing dedicated space below the canvas — so
-    #page-frame no longer reserves any fixed footer height for it. Canvas
-    sizing is now standard 480:800 letterboxing against the full visible
-    viewport, no artificial shrinkage. controller.js sets #page-frame to
-    position:relative itself.
+    (#game-container, aspect-locked to 480:800) stacked above the
+    player-draggable/resizable control box (position: absolute within this
+    element, sized/capped in game.js's createController()). The box is
+    free to be dragged anywhere within #page-frame, including deliberately
+    over the canvas — but its AUTOMATIC default/landing position sits just
+    below the canvas, so #page-frame reserves exactly enough room below
+    the canvas to fit the box's CURRENT actual height without overlap.
+
+    That reserved amount is NOT a static guess: controller.js publishes
+    the box's live height as the --wiz-ctrl-height custom property on
+    #page-frame itself (see controller.js's _reportHeight(), called on
+    every layout change — first paint, loading a saved layout, live
+    drag-resize, and window-resize re-clamp), and the max-width/max-height
+    formulas below reference it directly via var(). Because a CSS custom
+    property change alone triggers a reflow of anything that reads it,
+    this stays correct automatically: no polling, no resize-event wiring
+    needed here. The "+ 8px" mirrors controller.js's own gap between the
+    canvas and the box's default position (_computeDefaultLayout's +8).
+    The var()'s 153px fallback matches createController()'s defaultHeight,
+    for the brief instant before controller.js has run its first layout
+    pass. controller.js sets #page-frame to position:relative itself.
 
     Sized against --vvh/--vvw (kept live by window.visualViewport in the
     <script> above) instead of raw 100vh/100vw: on iOS Safari the raw vh
@@ -72,8 +85,8 @@
   #page-frame {
     width: var(--vvw, 100vw);
     height: var(--vvh, 100vh);
-    max-width: calc(var(--vvh, 100vh) * 480 / 800);
-    max-height: calc(var(--vvw, 100vw) * 800 / 480);
+    max-width: calc((var(--vvh, 100vh) - (var(--wiz-ctrl-height, 153px) + 8px)) * 480 / 800);
+    max-height: calc(var(--vvw, 100vw) * 800 / 480 + var(--wiz-ctrl-height, 153px) + 8px);
   }
   #game-container {
     width: 100%;

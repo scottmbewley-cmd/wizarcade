@@ -82,6 +82,17 @@
 //   Games that don't set `adjustable` are completely unaffected: no
 //   titlebar/resize handle, fixed size/position exactly as before.
 //
+//   While adjustable, the box's current actual height is also published
+//   live as a CSS custom property, --wiz-ctrl-height, on `target` — every
+//   time the layout is applied (first paint, loading a saved layout,
+//   drag-resize, or a window-resize re-clamp). A game's own CSS can
+//   reference var(--wiz-ctrl-height, <fallback>) to size a canvas area
+//   around the box's REAL current size instead of guessing a fixed
+//   number, and stays correct even after the player resizes the box —
+//   no polling, no resize-event wiring needed on the game's side, since a
+//   CSS custom property change alone triggers a browser reflow of
+//   anything that references it via var().
+//
 // directions supports all 8 compass points: left, right, up, down,
 // upLeft, upRight, downLeft, downRight — each independently on/off.
 // A diagonal is reported only if ITS OWN flag is enabled; it does not
@@ -387,6 +398,26 @@
       this.element.style.top = this._layout.y + "px";
       this.element.style.width = this._layout.w + "px";
       this.element.style.height = this._layout.h + "px";
+      this._reportHeight();
+    }
+
+    // Publishes a height as --wiz-ctrl-height on `target` — see the
+    // top-of-file usage comment. This is what lets a game's own CSS
+    // coordinate canvas/page sizing directly with the box's REAL size
+    // instead of a static guess that goes stale the moment the player
+    // resizes it. Defaults to the current settled layout's height
+    // (called with no args from _applyLayout, after every clamp), but
+    // callers that are ABOUT to clamp a NEW candidate height must pass it
+    // explicitly first — see _buildDom/_buildResizeHandle: if a game's
+    // CSS uses this var to size `target` itself (as index.html does),
+    // _clampLayout's own _targetRect() measurement would otherwise still
+    // reflect the OLD height for that one clamp call, one step behind.
+    _reportHeight(height) {
+      if (!this.options.adjustable) return;
+      const h = height != null ? height : this._layout && this._layout.h;
+      if (!Number.isFinite(h)) return;
+      const target = this.options.target || document.body;
+      target.style.setProperty("--wiz-ctrl-height", h + "px");
     }
 
     _buildResizeHandle() {
@@ -421,7 +452,15 @@
         if (!resizing) return;
         const dx = e.clientX - startClientX;
         const dy = e.clientY - startClientY;
-        this._layout = this._clampLayout(this._layout.x, this._layout.y, startW + dx, startH + dy);
+        const candidateH = startH + dy;
+        // Report the height we're ABOUT to clamp to BEFORE clamping — if a
+        // game's CSS reserves space around `target` based on this var (as
+        // index.html does), _clampLayout's own target-bounds measurement
+        // below must already reflect it, or a single large resize step
+        // (not just many small ones) could clamp against stale bounds and
+        // land outside the (about-to-shrink-or-grow) frame for a frame.
+        this._reportHeight(candidateH);
+        this._layout = this._clampLayout(this._layout.x, this._layout.y, startW + dx, candidateH);
         this._applyLayout();
       });
       const endResize = () => {
@@ -556,6 +595,17 @@
         // previous session (different viewport, different page CSS, etc.)
         // is never trusted as-is.
         const savedLayout = this._loadLayout();
+
+        // Report the height we're ABOUT to clamp to BEFORE clamping — see
+        // _reportHeight's own comment. Without this, the very first
+        // _clampLayout call below would measure target's bounds using
+        // whatever height a game's CSS was reserving BEFORE this
+        // controller ever ran (its var() fallback, e.g. defaultHeight),
+        // not the saved layout's actual (possibly much taller) height —
+        // stale by exactly one step, on the one occasion (page load) that
+        // never gets a second chance to self-correct via a later drag.
+        this._reportHeight(savedLayout && Number.isFinite(savedLayout.h) ? savedLayout.h : this.options.defaultHeight);
+
         let layout = savedLayout && this._clampLayout(savedLayout.x, savedLayout.y, savedLayout.w, savedLayout.h);
 
         // Safety net: clamping can only nudge a saved layout back within
