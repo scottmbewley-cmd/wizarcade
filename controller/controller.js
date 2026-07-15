@@ -222,6 +222,8 @@
       this._openPointerCount = 0; // net pointerdowns minus pointerups/cancels seen on this element
       this._lastMoveLogTime = -Infinity; // ensures the very first move always logs, even if it happens within 300ms of page load
 
+      this._lastReportedHeight = null; // see _reportHeight() — null guarantees the first real call always writes
+
       this._buildDom();
       this._bindEvents();
       this._bindResize();
@@ -433,6 +435,14 @@
       if (!this.options.adjustable) return;
       const h = height != null ? height : this._layout && this._layout.h;
       if (!Number.isFinite(h)) return;
+      // _applyLayout() calls this unconditionally on EVERY pointermove
+      // during a box-reposition drag, where height never actually
+      // changes — skipping the write when it's identical to what's
+      // already published avoids rewriting a CSS custom property (and
+      // whatever layout it cascades into, e.g. index.html's canvas-area
+      // sizing formulas) dozens of times a second for nothing.
+      if (h === this._lastReportedHeight) return;
+      this._lastReportedHeight = h;
       const target = this.options.target || document.body;
       target.style.setProperty("--wiz-ctrl-height", h + "px");
     }
@@ -451,6 +461,34 @@
       let startW = 0;
       let startH = 0;
 
+      // Raw pointermove events can fire far faster than the display can
+      // actually repaint (esp. on iOS). Height genuinely changes on every
+      // one of these (unlike a pure box-reposition drag, where
+      // _reportHeight()'s own unchanged-value check above already
+      // eliminates the redundant writes), so instead of clamping/applying
+      // synchronously per event, each pointermove just records the latest
+      // pending dx/dy and schedules (at most) one rAF-batched flush — any
+      // further pointermoves before that frame paints just update the
+      // pending values in place, collapsing a whole burst of native events
+      // into a single clamp + DOM/CSS write per animation frame.
+      let pendingDx = 0;
+      let pendingDy = 0;
+      let resizeRafId = null;
+
+      const flushResize = () => {
+        resizeRafId = null;
+        const candidateH = startH + pendingDy;
+        // Report the height we're ABOUT to clamp to BEFORE clamping — if a
+        // game's CSS reserves space around `target` based on this var (as
+        // index.html does), _clampLayout's own target-bounds measurement
+        // below must already reflect it, or a single large resize step
+        // (not just many small ones) could clamp against stale bounds and
+        // land outside the (about-to-shrink-or-grow) frame for a frame.
+        this._reportHeight(candidateH);
+        this._layout = this._clampLayout(this._layout.x, this._layout.y, startW + pendingDx, candidateH);
+        this._applyLayout();
+      };
+
       handle.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         e.stopPropagation(); // never let this reach the box's own drag/input handling
@@ -459,6 +497,8 @@
         startClientY = e.clientY;
         startW = this._layout.w;
         startH = this._layout.h;
+        pendingDx = 0;
+        pendingDy = 0;
         try {
           handle.setPointerCapture(e.pointerId);
         } catch (err) {
@@ -467,22 +507,24 @@
       });
       handle.addEventListener("pointermove", (e) => {
         if (!resizing) return;
-        const dx = e.clientX - startClientX;
-        const dy = e.clientY - startClientY;
-        const candidateH = startH + dy;
-        // Report the height we're ABOUT to clamp to BEFORE clamping — if a
-        // game's CSS reserves space around `target` based on this var (as
-        // index.html does), _clampLayout's own target-bounds measurement
-        // below must already reflect it, or a single large resize step
-        // (not just many small ones) could clamp against stale bounds and
-        // land outside the (about-to-shrink-or-grow) frame for a frame.
-        this._reportHeight(candidateH);
-        this._layout = this._clampLayout(this._layout.x, this._layout.y, startW + dx, candidateH);
-        this._applyLayout();
+        pendingDx = e.clientX - startClientX;
+        pendingDy = e.clientY - startClientY;
+        if (resizeRafId === null) {
+          resizeRafId = requestAnimationFrame(flushResize);
+        }
       });
       const endResize = () => {
         if (!resizing) return;
         resizing = false;
+        // Flush any still-pending frame synchronously, right now, before
+        // saving — otherwise the release could land in the gap between the
+        // last pointermove and its not-yet-painted rAF callback, and
+        // _saveLayout() would persist a stale size instead of the one the
+        // player actually released on.
+        if (resizeRafId !== null) {
+          cancelAnimationFrame(resizeRafId);
+          flushResize();
+        }
         this._saveLayout();
       };
       handle.addEventListener("pointerup", endResize);
