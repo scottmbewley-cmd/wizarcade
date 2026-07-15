@@ -218,28 +218,11 @@
       this._lastY = 0;
       this._draggingBox = false;
 
-      // TEMP DIAGNOSTIC state — safe to delete later, see _debugLog().
-      this._openPointerCount = 0; // net pointerdowns minus pointerups/cancels seen on this element
-      this._lastMoveLogTime = -Infinity; // ensures the very first move always logs, even if it happens within 300ms of page load
-
       this._lastReportedHeight = null; // see _reportHeight() — null guarantees the first real call always writes
 
       this._buildDom();
       this._bindEvents();
       this._bindResize();
-    }
-
-    // TEMP DIAGNOSTIC — safe to delete later. No-ops unless a host page
-    // defines window.__wizDebugLog (see test-invaders/index.html's shared
-    // on-screen overlay), so this is harmless for any other consumer of
-    // this module (e.g. controller/demo.html) that doesn't define it.
-    // Investigating the touch-only ghost-ship/midpoint-bullet bug: static
-    // analysis couldn't confirm a dual-position-source mechanism here, so
-    // this logs every raw pointer event this element receives — BEFORE any
-    // of the early-return guards below — so a leaked/foreign/unexpected
-    // pointer can never be silently swallowed without a trace.
-    _debugLog(line) {
-      if (typeof window.__wizDebugLog === "function") window.__wizDebugLog(line);
     }
 
     onMove(cb) {
@@ -715,17 +698,6 @@
     }
 
     _onPointerDown(e) {
-      // TEMP DIAGNOSTIC — safe to delete later. Logged BEFORE the
-      // single-pointer guard below so a second/foreign pointerdown that
-      // gets ignored by that guard is still visible in the overlay,
-      // instead of vanishing without a trace.
-      this._openPointerCount++;
-      this._debugLog(
-        "DOWN  pid=" + e.pointerId + " ptype=" + e.pointerType +
-        " tracked=" + this._pointerId + " open=" + this._openPointerCount +
-        " x=" + Math.round(e.clientX)
-      );
-
       if (this._pointerId !== null) return; // only track one touch at a time
       // CSS touch-action:none on .wiz-ctrl (see injectStyles) is not
       // sufficient by itself on iOS Safari to suppress its native
@@ -777,24 +749,6 @@
     }
 
     _onPointerMove(e) {
-      // TEMP DIAGNOSTIC — safe to delete later. Any move from a pointerId
-      // OTHER than the one currently tracked, or from a non-touch
-      // pointerType, is logged UNCONDITIONALLY (it's exactly the
-      // "second position source" signal this is hunting for); an
-      // ordinary tracked-touch move is throttled to ~1 line/300ms so it
-      // doesn't flood the shared 15-line overlay out of anything rarer.
-      const isForeignPointer = e.pointerId !== this._pointerId;
-      const isNonTouch = e.pointerType !== "touch";
-      const now = performance.now();
-      if (isForeignPointer || isNonTouch || now - this._lastMoveLogTime > 300) {
-        this._lastMoveLogTime = now;
-        this._debugLog(
-          "MOVE  pid=" + e.pointerId + " ptype=" + e.pointerType +
-          " tracked=" + this._pointerId + (isForeignPointer ? " [FOREIGN]" : "") +
-          " x=" + Math.round(e.clientX)
-        );
-      }
-
       if (e.pointerId !== this._pointerId) return;
       e.preventDefault(); // see _onPointerDown — keeps iOS Safari from treating an in-progress drag as a zoom/scroll gesture
 
@@ -820,18 +774,6 @@
     }
 
     _onPointerUp(e) {
-      // TEMP DIAGNOSTIC — safe to delete later. This handler is bound to
-      // BOTH "pointerup" and "pointercancel" (see _bindEvents), hence
-      // logging e.type too. Logged BEFORE the guard below, and
-      // decrementing the SAME open-pointer counter _onPointerDown
-      // increments, so a pointerdown that never gets a matching up/cancel
-      // (a leaked/stuck pointer) shows up as "open" staying above 0.
-      this._openPointerCount = Math.max(0, this._openPointerCount - 1);
-      this._debugLog(
-        "UP    pid=" + e.pointerId + " evt=" + e.type + " ptype=" + e.pointerType +
-        " tracked=" + this._pointerId + " open=" + this._openPointerCount
-      );
-
       if (e.pointerId !== this._pointerId) return;
       e.preventDefault(); // see _onPointerDown — completes the same guard for the tap/release end of the gesture
 

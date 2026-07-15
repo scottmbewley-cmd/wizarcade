@@ -35,35 +35,38 @@ const PLAYER_FIRE_INTERVAL_MS = 300;
 const PLAYER_KEY_SPEED = 320; // px/s, desktop arrow/A-D movement
 
 // --- Touch/pointer steering feel (independently tunable; playtest-driven) ---
-// Two SEPARATE constants on purpose, both currently 0.75 (a ~25%
-// reduction from the old 1:1/instant-snap feel) but not coupled to each
-// other: one controls how FAR a given drag moves the ship's target
-// position, the other controls how QUICKLY the ship catches up to
-// wherever that target currently is. Tune independently as needed.
+// Two SEPARATE constants on purpose, not coupled to each other: one
+// controls how FAR a given drag moves the ship's target position, the
+// other controls how QUICKLY the ship catches up to wherever that target
+// currently is. Tune independently as needed. Both started at 1.0 (raw
+// 1:1 mapping / instant snap), were first reduced ~25% to 0.75, and have
+// now each been reduced a further ~15% FROM that 0.75 (same reduction
+// logic applied to both, consistently: 0.75 * 0.85 = 0.6375) — not 15%
+// off the original 1.0 baseline.
 
 // Scales the steering strip's box-to-screen position mapping about the
 // screen's horizontal center, via WizController's own `rangeX` option
 // below (see createController()) — controller.js's mapping is already
 // generic/parametrized by rangeX, so this needs no changes there. 1.0 =
 // dragging across the strip's full physical width reaches the full
-// GAME_WIDTH (the old behavior); 0.75 means the SAME physical drag
-// distance moves the ship's target position about 25% less far,
+// GAME_WIDTH (the old behavior); 0.6375 means the SAME physical drag
+// distance moves the ship's target position noticeably less far,
 // requiring proportionally more thumb travel for the same on-screen
 // movement. Only affects touch/pointer steering — keyboard movement
 // (PLAYER_KEY_SPEED above) is a separate code path, untouched by this.
-const STEERING_SENSITIVITY = 0.75;
+const STEERING_SENSITIVITY = 0.6375;
 
 // Fraction of the remaining distance-to-target the ship closes per
 // REFERENCE 1/60s frame (see updatePlayerMovement()) — frame-rate-
 // independent exponential smoothing, not a naive per-frame lerp: 1.0
 // would close 100% of the gap every 1/60s at ANY actual frame rate (an
-// instant snap — the old behavior); 0.75 closes 75% of the gap per
-// reference frame, noticeably lagging behind a moving target rather than
-// snapping straight to it. Only affects touch/pointer steering —
-// keyboard movement is already a continuous rate-based control (moves at
-// a constant px/s while a key is held), not a snap-to-position one, so
-// there's nothing to ease there.
-const MOVEMENT_SMOOTHING = 0.75;
+// instant snap — the old behavior); 0.6375 closes 63.75% of the gap per
+// reference frame, lagging further behind a moving target than before
+// rather than snapping straight to it. Only affects touch/pointer
+// steering — keyboard movement is already a continuous rate-based
+// control (moves at a constant px/s while a key is held), not a
+// snap-to-position one, so there's nothing to ease there.
+const MOVEMENT_SMOOTHING = 0.6375;
 
 const ALIEN_SIZE = 22;
 const ALIEN_BULLET_SPEED = 260;
@@ -548,39 +551,6 @@ class MainScene extends Phaser.Scene {
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keyA = this.input.keyboard.addKey("A");
     this.keyD = this.input.keyboard.addKey("D");
-
-    // TEMP DIAGNOSTIC — safe to delete later. Phaser's own input system
-    // (MouseManager + TouchManager) is still fully active on this canvas
-    // by default even though nothing above reads movement from it —
-    // logging its pointerdown/pointermove/pointerup here, into the SAME
-    // shared on-screen overlay controller.js's steering-box handlers log
-    // to (see index.html's window.__wizDebugLog), so it's possible to see
-    // whether Phaser's parallel input system ever fires during a steering
-    // drag (the control box lives entirely outside the canvas, in
-    // #page-frame, so under normal circumstances it shouldn't), and what
-    // pointer.wasTouch reports when it does. pointermove is throttled to
-    // ~1 line/300ms so it can't flood the shared 15-line overlay if it
-    // does turn out to fire continuously; pointerdown/pointerup are rare
-    // by nature so every one is logged.
-    if (typeof window.__wizDebugLog === "function") {
-      let lastPhaserMoveLog = 0;
-      this.input.on("pointerdown", (p) => {
-        window.__wizDebugLog(
-          "PHASER down pid=" + p.id + " wasTouch=" + p.wasTouch + " x=" + p.x.toFixed(1) + " y=" + p.y.toFixed(1)
-        );
-      });
-      this.input.on("pointermove", (p) => {
-        const now = performance.now();
-        if (now - lastPhaserMoveLog < 300) return;
-        lastPhaserMoveLog = now;
-        window.__wizDebugLog(
-          "PHASER move pid=" + p.id + " wasTouch=" + p.wasTouch + " x=" + p.x.toFixed(1) + " y=" + p.y.toFixed(1)
-        );
-      });
-      this.input.on("pointerup", (p) => {
-        window.__wizDebugLog("PHASER up   pid=" + p.id + " wasTouch=" + p.wasTouch);
-      });
-    }
 
     // HUD — retro arcade score readout
     this.scoreText = this.add
