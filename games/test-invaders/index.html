@@ -112,6 +112,29 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* TEMP DIAGNOSTIC — pointer-event debug overlay, safe to delete later.
+     Investigating the touch-only ghost-ship/midpoint-bullet bug — see
+     controller.js's _debugLog() and this file's own log-sink script below.
+     Sits at the TOP (away from #size-readout at the bottom) so both stay
+     independently readable/screenshotable on a real phone. */
+  #debug-log {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 99998;
+    max-height: 34vh;
+    overflow: hidden;
+    font-family: monospace;
+    font-size: 9px;
+    line-height: 1.3;
+    color: #7cfc9a;
+    background: rgba(0, 0, 0, 0.72);
+    padding: 2px 4px;
+    pointer-events: none;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
 </style>
 </head>
 <body>
@@ -119,6 +142,33 @@
     <div id="game-container"></div>
   </div>
   <div id="size-readout">measuring…</div>
+  <div id="debug-log"></div>
+  <script>
+    // TEMP DIAGNOSTIC — safe to delete later. Single shared log sink for
+    // the touch-only ghost-ship/midpoint-bullet investigation: controller.js
+    // calls window.__wizDebugLog() from _onPointerDown/_onPointerMove/
+    // _onPointerUp (the steering box's own pointer handling), and the
+    // Phaser pointer listeners registered below (in this file, since
+    // nothing in game.js itself reads movement from Phaser's input) call
+    // it too — both funnel into ONE chronologically-ordered on-screen
+    // overlay so it's possible to see, on a real phone with no dev-tools
+    // connection, whether Phaser's own parallel mouse/touch input system
+    // is doing anything unexpected relative to controller.js's own pointer
+    // stream during a steering drag. Defined here, before Phaser/
+    // controller.js/game.js load, so the sink exists no matter how early
+    // any of them fires. Keeps the last ~15 lines, newest at the bottom.
+    (function () {
+      var el = document.getElementById("debug-log");
+      var lines = [];
+      var MAX_LINES = 15;
+      window.__wizDebugLog = function (line) {
+        var t = performance.now().toFixed(0);
+        lines.push("[" + t + "] " + line);
+        if (lines.length > MAX_LINES) lines.shift();
+        el.textContent = lines.join("\n");
+      };
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
   <script src="../../controller/controller.js"></script>
   <script src="game.js"></script>

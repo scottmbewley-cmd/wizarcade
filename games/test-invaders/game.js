@@ -511,6 +511,39 @@ class MainScene extends Phaser.Scene {
     this.keyA = this.input.keyboard.addKey("A");
     this.keyD = this.input.keyboard.addKey("D");
 
+    // TEMP DIAGNOSTIC — safe to delete later. Phaser's own input system
+    // (MouseManager + TouchManager) is still fully active on this canvas
+    // by default even though nothing above reads movement from it —
+    // logging its pointerdown/pointermove/pointerup here, into the SAME
+    // shared on-screen overlay controller.js's steering-box handlers log
+    // to (see index.html's window.__wizDebugLog), so it's possible to see
+    // whether Phaser's parallel input system ever fires during a steering
+    // drag (the control box lives entirely outside the canvas, in
+    // #page-frame, so under normal circumstances it shouldn't), and what
+    // pointer.wasTouch reports when it does. pointermove is throttled to
+    // ~1 line/300ms so it can't flood the shared 15-line overlay if it
+    // does turn out to fire continuously; pointerdown/pointerup are rare
+    // by nature so every one is logged.
+    if (typeof window.__wizDebugLog === "function") {
+      let lastPhaserMoveLog = 0;
+      this.input.on("pointerdown", (p) => {
+        window.__wizDebugLog(
+          "PHASER down pid=" + p.id + " wasTouch=" + p.wasTouch + " x=" + p.x.toFixed(1) + " y=" + p.y.toFixed(1)
+        );
+      });
+      this.input.on("pointermove", (p) => {
+        const now = performance.now();
+        if (now - lastPhaserMoveLog < 300) return;
+        lastPhaserMoveLog = now;
+        window.__wizDebugLog(
+          "PHASER move pid=" + p.id + " wasTouch=" + p.wasTouch + " x=" + p.x.toFixed(1) + " y=" + p.y.toFixed(1)
+        );
+      });
+      this.input.on("pointerup", (p) => {
+        window.__wizDebugLog("PHASER up   pid=" + p.id + " wasTouch=" + p.wasTouch);
+      });
+    }
+
     // HUD — retro arcade score readout
     this.scoreText = this.add
       .text(14, 12, "SCORE 000000", {
