@@ -34,6 +34,37 @@ const PLAYER_BULLET_SPEED = 480;
 const PLAYER_FIRE_INTERVAL_MS = 300;
 const PLAYER_KEY_SPEED = 320; // px/s, desktop arrow/A-D movement
 
+// --- Touch/pointer steering feel (independently tunable; playtest-driven) ---
+// Two SEPARATE constants on purpose, both currently 0.75 (a ~25%
+// reduction from the old 1:1/instant-snap feel) but not coupled to each
+// other: one controls how FAR a given drag moves the ship's target
+// position, the other controls how QUICKLY the ship catches up to
+// wherever that target currently is. Tune independently as needed.
+
+// Scales the steering strip's box-to-screen position mapping about the
+// screen's horizontal center, via WizController's own `rangeX` option
+// below (see createController()) — controller.js's mapping is already
+// generic/parametrized by rangeX, so this needs no changes there. 1.0 =
+// dragging across the strip's full physical width reaches the full
+// GAME_WIDTH (the old behavior); 0.75 means the SAME physical drag
+// distance moves the ship's target position about 25% less far,
+// requiring proportionally more thumb travel for the same on-screen
+// movement. Only affects touch/pointer steering — keyboard movement
+// (PLAYER_KEY_SPEED above) is a separate code path, untouched by this.
+const STEERING_SENSITIVITY = 0.75;
+
+// Fraction of the remaining distance-to-target the ship closes per
+// REFERENCE 1/60s frame (see updatePlayerMovement()) — frame-rate-
+// independent exponential smoothing, not a naive per-frame lerp: 1.0
+// would close 100% of the gap every 1/60s at ANY actual frame rate (an
+// instant snap — the old behavior); 0.75 closes 75% of the gap per
+// reference frame, noticeably lagging behind a moving target rather than
+// snapping straight to it. Only affects touch/pointer steering —
+// keyboard movement is already a continuous rate-based control (moves at
+// a constant px/s while a key is held), not a snap-to-position one, so
+// there's nothing to ease there.
+const MOVEMENT_SMOOTHING = 0.75;
+
 const ALIEN_SIZE = 22;
 const ALIEN_BULLET_SPEED = 260;
 
@@ -305,7 +336,14 @@ class MainScene extends Phaser.Scene {
       mode: "absolute",
       directions: { left: true, right: true },
       tap: false,
-      rangeX: [0, GAME_WIDTH],
+      // Scaled about the screen's horizontal center by STEERING_SENSITIVITY
+      // (see its own comment above) instead of the raw [0, GAME_WIDTH] —
+      // box-center still maps to screen-center either way; only how far
+      // the box's edges reach changes.
+      rangeX: [
+        GAME_WIDTH / 2 - (GAME_WIDTH / 2) * STEERING_SENSITIVITY,
+        GAME_WIDTH / 2 + (GAME_WIDTH / 2) * STEERING_SENSITIVITY,
+      ],
       label: "STEERING ZONE",
       adjustable: true,
       storageKey: "wizarcade-test-invaders-layout",
@@ -696,19 +734,31 @@ class MainScene extends Phaser.Scene {
 
   updatePlayerMovement(dt) {
     const halfW = PLAYER_SIZE / 2;
-    let targetX = this.player.x;
 
-    if (this.pointerActive) {
-      targetX = Phaser.Math.Clamp(this.pointerX, halfW, GAME_WIDTH - halfW);
-    }
-
+    // Keyboard takes priority over touch when both are active in the same
+    // frame (unchanged from before) — it's already a continuous,
+    // incremental, rate-based control, so it sets this.player.x directly
+    // with no easing of its own to apply.
     if (this.cursors.left.isDown || this.keyA.isDown) {
-      targetX = this.player.x - PLAYER_KEY_SPEED * this.speedMultiplier * dt;
+      this.player.x -= PLAYER_KEY_SPEED * this.speedMultiplier * dt;
     } else if (this.cursors.right.isDown || this.keyD.isDown) {
-      targetX = this.player.x + PLAYER_KEY_SPEED * this.speedMultiplier * dt;
+      this.player.x += PLAYER_KEY_SPEED * this.speedMultiplier * dt;
+    } else if (this.pointerActive) {
+      // Ease toward the tracked pointer/touch position instead of
+      // snapping straight to it — frame-rate-independent exponential
+      // smoothing. Closing (1 - (1 - MOVEMENT_SMOOTHING) ^ (dt * 60)) of
+      // the remaining gap THIS frame gives the same overall feel at any
+      // actual frame rate: it correctly compounds over however many
+      // frames actually occur to match the reference-frame rate
+      // MOVEMENT_SMOOTHING is defined against (1/60s), unlike a naive
+      // fixed per-frame lerp factor, which would ease faster at high
+      // frame rates and slower at low ones for the exact same constant.
+      const targetX = Phaser.Math.Clamp(this.pointerX, halfW, GAME_WIDTH - halfW);
+      const t = 1 - Math.pow(1 - MOVEMENT_SMOOTHING, dt * 60);
+      this.player.x += (targetX - this.player.x) * t;
     }
 
-    this.player.x = Phaser.Math.Clamp(targetX, halfW, GAME_WIDTH - halfW);
+    this.player.x = Phaser.Math.Clamp(this.player.x, halfW, GAME_WIDTH - halfW);
     this.player.body.updateFromGameObject();
   }
 
