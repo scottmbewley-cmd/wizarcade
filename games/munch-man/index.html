@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Munch Man — WizArcade</title>
+<meta property="og:title" content="Munch Man">
+<meta property="og:description" content="Tap to play — endless maze survival.">
+<meta property="og:url" content="https://scottmbewley-cmd.github.io/wizarcade/games/munch-man/index.html">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  // iOS Safari BUG FIX: its address bar shows/hides dynamically as you
+  // scroll/interact, and 100vh does NOT reliably track the actually-visible
+  // viewport there — it can reflect the viewport as if the chrome were
+  // hidden even while it's shown, causing the page to overflow the real
+  // visible area (get cut off) with no way to scroll to the rest, since
+  // body has overflow:hidden. window.visualViewport tracks the REAL visible
+  // size live, so mirror it into CSS custom properties the stylesheet below
+  // reads instead of raw vh/vw units. Runs synchronously in <head>, before
+  // #page-frame is ever laid out, so there's no flash of wrongly-sized
+  // content on first paint. Falls back to 100vh/100vw (via the var()
+  // fallback argument in the CSS) on any browser without visualViewport.
+  (function () {
+    function syncViewportVars() {
+      var vv = window.visualViewport;
+      var w = vv ? vv.width : window.innerWidth;
+      var h = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty("--vvw", w + "px");
+      document.documentElement.style.setProperty("--vvh", h + "px");
+    }
+    syncViewportVars();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewportVars);
+      window.visualViewport.addEventListener("scroll", syncViewportVars);
+    }
+    window.addEventListener("resize", syncViewportVars);
+    window.addEventListener("orientationchange", syncViewportVars);
+  })();
+</script>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /*
+    #page-frame is the WizController's `target` — it holds the game canvas
+    (#game-container, aspect-locked to 480:800) stacked above the
+    player-draggable/resizable control box (position: absolute within this
+    element, sized/capped in game.js's createController()). The box is
+    free to be dragged anywhere within #page-frame, including deliberately
+    over the canvas — but its AUTOMATIC default/landing position sits just
+    below the canvas, so #page-frame reserves exactly enough room below
+    the canvas to fit the box's CURRENT actual height without overlap.
+
+    That reserved amount is NOT a static guess: controller.js publishes
+    the box's live height as the --wiz-ctrl-height custom property on
+    #page-frame itself, updated on every layout change (first paint,
+    loading a saved layout, live drag-resize, and window-resize re-clamp),
+    and the max-width/max-height formulas below reference it directly via
+    var(). The "+ 8px" mirrors controller.js's own gap between the canvas
+    and the box's default position. The var()'s 153px fallback matches
+    createController()'s defaultHeight below.
+
+    Sized against --vvh/--vvw (kept live by window.visualViewport in the
+    <script> above) instead of raw 100vh/100vw — see the script's own
+    comment for why raw vh is unreliable on iOS Safari.
+  */
+  #page-frame {
+    width: var(--vvw, 100vw);
+    height: var(--vvh, 100vh);
+    max-width: calc((var(--vvh, 100vh) - (var(--wiz-ctrl-height, 153px) + 8px)) * 480 / 800);
+    max-height: calc(var(--vvw, 100vw) * 800 / 480 + var(--wiz-ctrl-height, 153px) + 8px);
+  }
+  #game-container {
+    width: 100%;
+    aspect-ratio: 480 / 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+</style>
+</head>
+<body>
+  <div id="page-frame">
+    <div id="game-container"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+  <script src="../../controller/controller.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
