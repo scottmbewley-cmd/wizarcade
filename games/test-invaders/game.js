@@ -460,7 +460,14 @@ class MainScene extends Phaser.Scene {
     this.pointerX = GAME_WIDTH / 2;
     this.speedMultiplier = loadSpeedMultiplier();
 
-    // Player
+    // Player — guard mirrors createController()'s own duplicate-guard
+    // further down in this method: belt-and-suspenders insurance that a
+    // stray leftover reference (e.g. from a scene restart) can never leave
+    // two player images alive at once, same defensive pattern already
+    // established in this file.
+    if (this.player) {
+      this.player.destroy();
+    }
     this.player = this.physics.add.image(GAME_WIDTH / 2, PLAYER_Y, "playerShip");
     this.player.body.setSize(PLAYER_SIZE, PLAYER_SIZE, true);
     this.player.body.setCollideWorldBounds(true);

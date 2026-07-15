@@ -572,6 +572,14 @@
 
     _onPointerDown(e) {
       if (this._pointerId !== null) return; // only track one touch at a time
+      // CSS touch-action:none on .wiz-ctrl (see injectStyles) is not
+      // sufficient by itself on iOS Safari to suppress its native
+      // double-tap-zoom/pinch-zoom gesture recognition — that also needs an
+      // explicit preventDefault() on the actual pointer events, same as the
+      // resize handle below already does. Without this, dragging/resizing
+      // the box (or just tapping it repeatedly during play) could trigger
+      // an unwanted page zoom on a real iPhone.
+      e.preventDefault();
       this._pointerId = e.pointerId;
       try {
         this.element.setPointerCapture(e.pointerId);
@@ -615,6 +623,7 @@
 
     _onPointerMove(e) {
       if (e.pointerId !== this._pointerId) return;
+      e.preventDefault(); // see _onPointerDown — keeps iOS Safari from treating an in-progress drag as a zoom/scroll gesture
 
       if (this._draggingBox) {
         const dx = e.clientX - this._dragBoxStartClientX;
@@ -639,6 +648,7 @@
 
     _onPointerUp(e) {
       if (e.pointerId !== this._pointerId) return;
+      e.preventDefault(); // see _onPointerDown — completes the same guard for the tap/release end of the gesture
 
       if (this._draggingBox) {
         this._draggingBox = false;

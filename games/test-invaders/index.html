@@ -4,6 +4,35 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Test Invaders (Controller Test Build) — WizArcade</title>
+<script>
+  // iOS Safari BUG FIX: its address bar shows/hides dynamically as you
+  // scroll/interact, and 100vh does NOT reliably track the actually-visible
+  // viewport there — it can reflect the viewport as if the chrome were
+  // hidden even while it's shown, causing the page to overflow the real
+  // visible area (get cut off) with no way to scroll to the rest, since
+  // body has overflow:hidden. window.visualViewport tracks the REAL visible
+  // size live, so mirror it into CSS custom properties the stylesheet below
+  // reads instead of raw vh/vw units. Runs synchronously in <head>, before
+  // #page-frame is ever laid out, so there's no flash of wrongly-sized
+  // content on first paint. Falls back to 100vh/100vw (via the var()
+  // fallback argument in the CSS) on any browser without visualViewport.
+  (function () {
+    function syncViewportVars() {
+      var vv = window.visualViewport;
+      var w = vv ? vv.width : window.innerWidth;
+      var h = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty("--vvw", w + "px");
+      document.documentElement.style.setProperty("--vvh", h + "px");
+    }
+    syncViewportVars();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewportVars);
+      window.visualViewport.addEventListener("scroll", syncViewportVars);
+    }
+    window.addEventListener("resize", syncViewportVars);
+    window.addEventListener("orientationchange", syncViewportVars);
+  })();
+</script>
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -26,14 +55,22 @@
     possible footprint plus gaps) is folded into BOTH the max-width and
     max-height formulas below, so #page-frame's own box always fits the
     viewport exactly — canvas height + box's reserved space always sums
-    to no more than 100vh, on any screen size, with no scrolling needed.
-    controller.js sets #page-frame to position:relative itself.
+    to no more than the visible viewport height, on any screen size, with
+    no scrolling needed. controller.js sets #page-frame to position:relative
+    itself.
+
+    Sized against --vvh/--vvw (kept live by window.visualViewport in the
+    <script> above) instead of raw 100vh/100vw: on iOS Safari the raw vh
+    unit does not reliably track the actually-visible area once the address
+    bar's show/hide animation is factored in, which is what was cutting the
+    control box off-screen. The var() fallback (100vh/100vw) only matters on
+    browsers with no JS/visualViewport support.
   */
   #page-frame {
-    width: 100vw;
-    height: 100vh;
-    max-width: calc((100vh - 340px) * 480 / 800);
-    max-height: calc(100vw * 800 / 480 + 340px);
+    width: var(--vvw, 100vw);
+    height: var(--vvh, 100vh);
+    max-width: calc((var(--vvh, 100vh) - 340px) * 480 / 800);
+    max-height: calc(var(--vvw, 100vw) * 800 / 480 + 340px);
   }
   #game-container {
     width: 100%;
