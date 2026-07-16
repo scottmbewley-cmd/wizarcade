@@ -100,12 +100,15 @@ function drawFoodTexture(gfx, key) {
   gfx.generateTexture(key, TILE, TILE);
 }
 
-// --- Audio — plain Web Audio, synthesized only (no licensed clips needed
-// for v1: no background music, so the iOS media-session "ambient vs.
-// playback category" unlock trick Munch Man needs for its looping track
-// doesn't apply here — short SFX blips are fine on the default category).
-// Wrapped in try/catch with a no-op fallback so a busted AudioContext
-// (or none at all) can never take the rest of the game down with it. ---
+// --- Audio — plain Web Audio. The eat blip is still a synthesized
+// oscillator, but game-over now plays a licensed clip (assets/slither-
+// game-over.mp3, fetched + decoded once at load), same pattern as Munch
+// Man's music/game-over clips. It's a short one-shot SFX rather than a
+// looping background track, so the iOS media-session "ambient vs.
+// playback category" unlock trick Munch Man needs for its looping music
+// doesn't apply here. Wrapped in try/catch with a no-op fallback so a
+// busted AudioContext (or none at all) can never take the rest of the
+// game down with it. ---
 const AudioSys = (() => {
   try {
     return buildAudioSys();
@@ -127,6 +130,13 @@ const AudioSys = (() => {
     ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
       window.addEventListener(evt, () => ensureRunning(() => {}), { once: true })
     );
+
+    const buffers = {};
+    fetch("../../assets/slither-game-over.mp3")
+      .then((r) => r.arrayBuffer())
+      .then((data) => ctx.decodeAudioData(data))
+      .then((buf) => (buffers.gameOver = buf))
+      .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
 
     function tone(freq, dur, type, peakGain, whenOffset) {
       ensureRunning(() => {
@@ -150,9 +160,13 @@ const AudioSys = (() => {
       tone(920, 0.05, "square", 0.18, 0.045);
     }
     function playGameOver() {
-      tone(480, 0.12, "sawtooth", 0.22, 0);
-      tone(340, 0.14, "sawtooth", 0.2, 0.1);
-      tone(210, 0.22, "sawtooth", 0.22, 0.22);
+      if (!buffers.gameOver) return; // clip hasn't finished loading yet — rare (a very quick death), just skip rather than fall back
+      ensureRunning(() => {
+        const src = ctx.createBufferSource();
+        src.buffer = buffers.gameOver;
+        src.connect(master);
+        src.start(0);
+      });
     }
 
     return { playEat, playGameOver };
