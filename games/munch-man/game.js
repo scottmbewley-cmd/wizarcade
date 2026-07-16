@@ -442,13 +442,21 @@ const AudioSys = (() => {
   // after that, including this same AudioContext, then plays through the
   // normal Media volume/speaker path. assets/silent-audio-unlock.mp4 is a
   // ~2KB, 0.5s, genuinely silent clip that exists solely for this.
+  //
+  // On-device testing showed sound cutting out at almost exactly the
+  // 1-second mark — right around when that 0.5s clip would have finished
+  // and stopped holding the "playback" category. LOOPS continuously now
+  // (never ends, never gets removed) so the media-category session stays
+  // held for as long as the game is open, instead of only for its first
+  // half-second.
   let iosUnlockDone = false;
   function unlockIOSMediaSession() {
     if (iosUnlockDone) return; // pointerdown + touchstart both fire for one tap — only need this once, ever
     iosUnlockDone = true;
-    AudioDebug.log("unlockIOSMediaSession() starting");
+    AudioDebug.log("unlockIOSMediaSession() starting (looping)");
     const video = document.createElement("video");
     video.setAttribute("playsinline", "");
+    video.loop = true;
     video.muted = false;
     video.src = "../../assets/silent-audio-unlock.mp4";
     video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
@@ -461,14 +469,6 @@ const AudioSys = (() => {
       const err = video.error;
       AudioDebug.log("unlock video: element ERROR code=" + (err && err.code) + " msg=" + (err && err.message));
     });
-    video.addEventListener(
-      "ended",
-      () => {
-        AudioDebug.log("unlock video: ended normally");
-        video.remove();
-      },
-      { once: true }
-    );
   }
 
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
