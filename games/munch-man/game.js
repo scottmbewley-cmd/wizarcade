@@ -23,7 +23,9 @@
 // over jingle — assets/munch-man-music.mp3 and assets/munch-man-game-
 // over.mp3, fetched + decoded once at load) and all procedurally
 // synthesized SFX (pellet, power pellet, ghost-eaten, round-clear — plain
-// oscillators, no files) share one AudioContext and master gain node.
+// oscillators, no files) share one AudioContext and master gain node. A
+// third asset, assets/silent-audio-unlock.mp4, is not gameplay audio at
+// all — see unlockIOSMediaSession() for what it's actually for.
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -327,8 +329,40 @@ const AudioSys = (() => {
       ctx.resume().then(cb).catch(() => {});
     }
   }
+
+  // iOS Safari specific: on its own, this page's Web Audio content plays
+  // through the "ambient" audio session category — which iOS routes
+  // through the Ringer/Alerts volume + the physical mute switch, NOT the
+  // Media volume/speaker path that TikTok, Music, YouTube etc. use. A
+  // muted=false <video> element with a real (if silent) audio track,
+  // played on the very first gesture, nudges Safari's shared per-page
+  // audio session into the "playback" category instead — everything
+  // after that, including this same AudioContext, then plays through the
+  // normal Media volume/speaker path. assets/silent-audio-unlock.mp4 is a
+  // ~2KB, 0.5s, genuinely silent clip that exists solely for this.
+  let iosUnlockDone = false;
+  function unlockIOSMediaSession() {
+    if (iosUnlockDone) return; // pointerdown + touchstart both fire for one tap — only need this once, ever
+    iosUnlockDone = true;
+    const video = document.createElement("video");
+    video.setAttribute("playsinline", "");
+    video.muted = false;
+    video.src = "../../assets/silent-audio-unlock.mp4";
+    video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
+    document.body.appendChild(video);
+    video.play().catch(() => {}); // best-effort — harmless if this fails, just leaves the ambient-category default in place
+    video.addEventListener("ended", () => video.remove(), { once: true });
+  }
+
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
-    window.addEventListener(evt, () => ensureRunning(() => {}), { once: true })
+    window.addEventListener(
+      evt,
+      () => {
+        ensureRunning(() => {});
+        unlockIOSMediaSession();
+      },
+      { once: true }
+    )
   );
 
   const buffers = {};
