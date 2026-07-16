@@ -5,11 +5,12 @@
 // assets), delta-time-scaled movement, a retro HUD score readout, and an
 // endless round-over-round difficulty ramp with single-hit death + instant
 // "TAP TO RETRY". Input is the shared /controller/controller.js module in
-// "relative" (virtual-joystick) mode — see createController() — with its
-// continuous dx/dy reduced to a single dominant-axis direction (with
-// hysteresis against flip-flopping near the diagonal) since movement here
-// is grid-locked, one tile at a time, not free continuous movement.
-// Keyboard arrows/WASD work too, for desktop testing.
+// "zone" mode — see createController() — which reports a single,
+// unambiguous left/right/up/down direction straight from which of the
+// pad's 4 triangular regions the touch currently sits in, matching this
+// game's grid-locked (one tile at a time) movement with no extra
+// dominant-axis/hysteresis resolution needed on top. Keyboard arrows/WASD
+// work too, for desktop testing.
 //
 // Movement is grid-locked (one tile at a time along a fixed maze), not
 // free continuous movement — see stepEntity() below for the shared
@@ -101,15 +102,16 @@ const COLOR_FRIGHTENED = 0x4d5dff;
 const COLOR_FRIGHTENED_FLASH = 0xffffff;
 
 // --- Speeds, tiles/second (converted to px/s via TILE where used) ---
-// Two successive 25% cuts from the original tuning (player, ghost base/
-// growth, and eaten-ghost return speed) — 0.75 * 0.75 = 0.5625 of the
-// original values overall. GHOST_FRIGHTENED_SPEED_MULT is a multiplier of
-// the (already-reduced) base speed, so it doesn't need its own cut.
-const PLAYER_SPEED_TILES = 6.5 * 0.75 * 0.75;
-const GHOST_BASE_SPEED_START = 4.4 * 0.75 * 0.75;
-const GHOST_SPEED_GROWTH = 0.1 * 0.75 * 0.75; // per round, unbounded — matches the suite's endless ramp convention
+// Three successive cuts from the original tuning (player, ghost base/
+// growth, and eaten-ghost return speed) — two 25% cuts plus a further 20%
+// cut — 0.75 * 0.75 * 0.8 = 0.45 of the original values overall.
+// GHOST_FRIGHTENED_SPEED_MULT is a multiplier of the (already-reduced)
+// base speed, so it doesn't need its own cut.
+const PLAYER_SPEED_TILES = 6.5 * 0.75 * 0.75 * 0.8;
+const GHOST_BASE_SPEED_START = 4.4 * 0.75 * 0.75 * 0.8;
+const GHOST_SPEED_GROWTH = 0.1 * 0.75 * 0.75 * 0.8; // per round, unbounded — matches the suite's endless ramp convention
 const GHOST_FRIGHTENED_SPEED_MULT = 0.55;
-const GHOST_EATEN_SPEED_TILES = 11 * 0.75 * 0.75;
+const GHOST_EATEN_SPEED_TILES = 11 * 0.75 * 0.75 * 0.8;
 
 const FRIGHTENED_START_S = 7.5;
 const FRIGHTENED_DECAY_S = 0.35; // per round
@@ -294,68 +296,6 @@ function drawScanlineTexture(gfx, key) {
   gfx.generateTexture(key, 4, 4);
 }
 
-// --- TEMPORARY on-screen audio diagnostics --------------------------------
-// Several fix attempts (start-before-resume ordering, iOS media-session
-// category) haven't resolved silence reported on one specific iPhone, and
-// there's no way to see that device's console remotely. This always-
-// visible on-screen HUD surfaces the real pipeline state (fetch/decode
-// results, resume() outcomes, the iOS unlock video's play() result, any
-// uncaught JS error) directly on the phone's own screen — no DevTools or
-// computer needed, just read it off and report back what it says. Remove
-// once the actual root cause on that device is confirmed and fixed.
-const AudioDebug = (() => {
-  const el = document.createElement("div");
-  el.style.cssText = [
-    "position:fixed",
-    "top:calc(env(safe-area-inset-top, 0px) + 28px)", // clear of Safari/in-app-browser chrome at the very top
-    "left:0",
-    "right:0",
-    "z-index:999999",
-    "background:rgba(0,0,0,0.88)",
-    "color:#2dffb0",
-    "font:10px/1.35 monospace",
-    "padding:4px 6px",
-    "white-space:pre-wrap",
-    "pointer-events:none",
-    "max-height:42vh",
-    "overflow:hidden",
-  ].join(";");
-  document.body.appendChild(el);
-  // Capped low enough that everything always fits inside max-height without
-  // the browser silently clipping the newest lines — the old 50-line cap
-  // relied on scrolling that was never implemented, so once the box filled
-  // up, the most recent (most important) lines were invisible, hidden by
-  // overflow:hidden, not the oldest ones.
-  const lines = [];
-  function log(msg) {
-    const t = new Date().toISOString().slice(11, 19);
-    lines.push("[" + t + "] " + msg);
-    if (lines.length > 14) lines.shift();
-    el.textContent = lines.join("\n");
-  }
-  window.addEventListener("error", (e) => log("JS ERROR: " + e.message));
-  window.addEventListener("unhandledrejection", (e) =>
-    log("UNHANDLED REJECTION: " + (e.reason && e.reason.message ? e.reason.message : e.reason))
-  );
-
-  // Also report the adjustable controller box's saved layout — it's a
-  // separate report (control pad "got bigger" on one iPhone) that showed
-  // up alongside the audio one. The box is player-adjustable and its
-  // {x,y,w,h} persists in localStorage per device (see WizController's
-  // storageKey option), so if it was ever dragged/resized on that phone —
-  // even by accident — it stays that size on every future visit until
-  // that storage key is cleared. Logging what's actually saved there
-  // settles whether that's what's happening instead of guessing.
-  try {
-    log("saved layout: " + (localStorage.getItem("wizarcade-munch-man-layout") || "(none saved — using defaults)"));
-  } catch (e) {
-    log("localStorage read failed: " + e.message);
-  }
-  log("viewport: innerW=" + window.innerWidth + " innerH=" + window.innerHeight + " dpr=" + window.devicePixelRatio);
-
-  return { log };
-})();
-
 // --- Audio ---------------------------------------------------------------
 // One shared AudioContext + master gain for everything: the two licensed
 // clips (fetched/decoded once, up front) and the procedurally synthesized
@@ -389,7 +329,6 @@ const AudioSys = (() => {
   try {
     return buildAudioSys();
   } catch (e) {
-    AudioDebug.log("AudioSys init FAILED — audio disabled, game continues: " + e.message);
     const noop = () => {};
     return {
       playMusic: noop,
@@ -404,14 +343,6 @@ const AudioSys = (() => {
 
   function buildAudioSys() {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  AudioDebug.log("ctx created, state=" + ctx.state + ", sampleRate=" + ctx.sampleRate);
-  // "statechange" fires immediately on every transition — including into
-  // and out of Safari's non-standard "interrupted" state (distinct from
-  // the spec's suspended/running/closed; iOS uses it when something at
-  // the OS/audio-session level is blocking playback). ensureRunning()
-  // only reacts when IT calls resume(); this catches every transition
-  // even ones triggered externally.
-  ctx.addEventListener("statechange", () => AudioDebug.log("ctx statechange -> " + ctx.state));
 
   const master = ctx.createGain();
   master.gain.value = 0.6;
@@ -421,14 +352,7 @@ const AudioSys = (() => {
     if (ctx.state === "running") {
       cb();
     } else {
-      AudioDebug.log("resume() called (state=" + ctx.state + ")");
-      ctx
-        .resume()
-        .then(() => {
-          AudioDebug.log("resume() resolved, state=" + ctx.state);
-          cb();
-        })
-        .catch((e) => AudioDebug.log("resume() REJECTED: " + e.message));
+      ctx.resume().then(cb).catch(() => {});
     }
   }
 
@@ -442,49 +366,25 @@ const AudioSys = (() => {
   // after that, including this same AudioContext, then plays through the
   // normal Media volume/speaker path. assets/silent-audio-unlock.mp4 is a
   // ~2KB, 0.5s, genuinely silent clip that exists solely for this.
-  //
-  // Tried making this clip loop continuously (never ending) on the theory
-  // that sound cutting out ~1s in meant the "playback" category was only
-  // held for the clip's original 0.5s duration. On-device testing showed
-  // that made things WORSE (no sound at all, vs. ~1s before) — each loop
-  // restart likely churns the shared audio session itself, plausibly
-  // re-triggering the "interrupted" state repeatedly instead of holding a
-  // clean single state. Reverted to a single play.
   let iosUnlockDone = false;
   function unlockIOSMediaSession() {
     if (iosUnlockDone) return; // pointerdown + touchstart both fire for one tap — only need this once, ever
     iosUnlockDone = true;
-    AudioDebug.log("unlockIOSMediaSession() starting");
     const video = document.createElement("video");
     video.setAttribute("playsinline", "");
     video.muted = false;
     video.src = "../../assets/silent-audio-unlock.mp4";
     video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
     document.body.appendChild(video);
-    video
-      .play()
-      .then(() => AudioDebug.log("unlock video: play() succeeded"))
-      .catch((e) => AudioDebug.log("unlock video: play() FAILED: " + e.name + ": " + e.message));
-    video.addEventListener("error", () => {
-      const err = video.error;
-      AudioDebug.log("unlock video: element ERROR code=" + (err && err.code) + " msg=" + (err && err.message));
-    });
-    video.addEventListener(
-      "ended",
-      () => {
-        AudioDebug.log("unlock video: ended normally");
-        video.remove();
-      },
-      { once: true }
-    );
+    video.play().catch(() => {}); // best-effort — harmless if this fails, just leaves the ambient-category default in place
+    video.addEventListener("ended", () => video.remove(), { once: true });
   }
 
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
     window.addEventListener(
       evt,
       () => {
-        AudioDebug.log("gesture: " + evt);
-        ensureRunning(() => AudioDebug.log("ensureRunning cb fired (from " + evt + ")"));
+        ensureRunning(() => {});
         unlockIOSMediaSession();
       },
       { once: true }
@@ -494,20 +394,13 @@ const AudioSys = (() => {
   const buffers = {};
   function loadClip(name, url) {
     fetch(url)
-      .then((r) => {
-        AudioDebug.log(name + " fetch: HTTP " + r.status + ", ok=" + r.ok);
-        return r.arrayBuffer();
-      })
-      .then((data) => {
-        AudioDebug.log(name + " arrayBuffer: " + data.byteLength + " bytes");
-        return ctx.decodeAudioData(data);
-      })
+      .then((r) => r.arrayBuffer())
+      .then((data) => ctx.decodeAudioData(data))
       .then((buf) => {
-        AudioDebug.log(name + " decodeAudioData OK: duration=" + buf.duration.toFixed(2) + "s");
         buffers[name] = buf;
         if (name === "music" && musicWanted) ensureRunning(tryStartMusic);
       })
-      .catch((e) => AudioDebug.log(name + " FAILED: " + e.name + ": " + e.message));
+      .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
   }
   loadClip("music", "../../assets/munch-man-music.mp3");
   loadClip("gameOver", "../../assets/munch-man-game-over.mp3");
@@ -515,18 +408,12 @@ const AudioSys = (() => {
   let musicSource = null;
   let musicWanted = false;
   function tryStartMusic() {
-    if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") {
-      AudioDebug.log(
-        "tryStartMusic() no-op: wanted=" + musicWanted + " alreadyStarted=" + !!musicSource + " haveBuffer=" + !!buffers.music + " ctxState=" + ctx.state
-      );
-      return;
-    }
+    if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") return;
     musicSource = ctx.createBufferSource();
     musicSource.buffer = buffers.music;
     musicSource.loop = true;
     musicSource.connect(master);
     musicSource.start(0);
-    AudioDebug.log("music STARTED (ctx.state=" + ctx.state + ", destination channels=" + ctx.destination.channelCount + ")");
   }
   function playMusic() {
     musicWanted = true;
@@ -694,19 +581,21 @@ class MainScene extends Phaser.Scene {
       .setAlpha(0.4);
   }
 
-  // The shared /controller/controller.js joystick, in "relative" mode —
-  // it hands us a continuous dx/dy (-1..1) deflection from the touch-start
-  // point on every pointermove. Movement here is grid-locked (one tile at
-  // a time, see stepEntity()), so a raw 2D vector isn't what we want to
-  // act on directly — dx/dy is reduced below to a single dominant-axis
-  // direction, with hysteresis so thumb jitter near the diagonal
-  // (dx ~= dy) doesn't flip the axis back and forth on every event.
+  // The shared /controller/controller.js joystick, in "zone" mode — the
+  // pad is split by its own diagonals into 4 triangular regions (matching
+  // a classic on-screen D-pad), and whichever region the touch is
+  // CURRENTLY in is reported directly as a single unambiguous left/right/
+  // up/down boolean, recomputed fresh on every pointermove. No deadzone,
+  // no distance/angle math, no dominant-axis-plus-hysteresis resolution
+  // layered on top the way "relative" mode needed — zone mode's own
+  // payload is already exactly the single clean direction this grid-locked
+  // game wants (see stepEntity() for the tile-stepping this drives).
   createController() {
     if (this.controller) this.controller.destroy();
 
     this.controller = new WizController({
       target: document.getElementById("page-frame"),
-      mode: "relative",
+      mode: "zone",
       directions: { left: true, right: true, up: true, down: true },
       tap: false,
       label: "MOVE",
@@ -718,17 +607,6 @@ class MainScene extends Phaser.Scene {
       minHeight: 90,
       maxWidth: 400,
       maxHeight: 300,
-      deadzone: 0.35,
-      joystickRadius: 65,
-    });
-
-    requestAnimationFrame(() => {
-      const rect = this.controller.element.getBoundingClientRect();
-      const frame = document.getElementById("page-frame");
-      AudioDebug.log(
-        "controller box: w=" + Math.round(rect.width) + " h=" + Math.round(rect.height) + " --wiz-ctrl-height=" + getComputedStyle(frame).getPropertyValue("--wiz-ctrl-height")
-      );
-      AudioDebug.log("page-frame: w=" + Math.round(frame.getBoundingClientRect().width) + " h=" + Math.round(frame.getBoundingClientRect().height));
     });
 
     const dirVectors = {
@@ -737,40 +615,11 @@ class MainScene extends Phaser.Scene {
       left: { x: -1, y: 0 },
       right: { x: 1, y: 0 },
     };
-    // Once a direction is picked, require the other axis to pull ahead by
-    // this ratio before switching — same idea as the old bespoke D-pad's
-    // hysteresis, just applied to controller.js's normalized dx/dy instead
-    // of raw pixel offsets.
-    const AXIS_HYSTERESIS = 1.3;
 
-    let lastDir = null;
-    let wasActive = false;
     this.controller.onMove((data) => {
-      if (!data.active) {
-        wasActive = false;
-        return;
-      }
-      if (!wasActive) {
-        wasActive = true;
-        lastDir = null; // fresh touch — free to pick either axis first
-      }
-
-      const dx = data.dx || 0;
-      const dy = data.dy || 0;
-      if (Math.hypot(dx, dy) < this.controller.options.deadzone) return; // too close to center — keep the last direction
-
-      const absX = Math.abs(dx);
-      const absY = Math.abs(dy);
-      const lastWasHorizontal = lastDir === "left" || lastDir === "right";
-      const lastWasVertical = lastDir === "up" || lastDir === "down";
-      let horizontal;
-      if (lastWasHorizontal) horizontal = !(absY > absX * AXIS_HYSTERESIS);
-      else if (lastWasVertical) horizontal = absX > absY * AXIS_HYSTERESIS;
-      else horizontal = absX >= absY;
-
-      const dir = horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
-      if (dir === lastDir) return;
-      lastDir = dir;
+      if (!data.active) return;
+      const dir = data.left ? "left" : data.right ? "right" : data.up ? "up" : data.down ? "down" : null;
+      if (!dir) return;
       this.dismissHint();
       this.queuedDir = dirVectors[dir];
     });

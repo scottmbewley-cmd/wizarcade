@@ -7,7 +7,7 @@
 //
 // USAGE
 //   const controller = new WizController({
-//     mode: "absolute",                          // "absolute" | "relative"
+//     mode: "absolute",                          // "absolute" | "relative" | "zone"
 //     directions: { left: true, right: true },    // any combo of the 8 below
 //     tap: false,                                  // enable tap-to-fire style input
 //     rangeX: [0, 480],                            // absolute mode: output range for x
@@ -101,13 +101,28 @@
 //
 // onMove PAYLOAD (always this shape; unused fields are null/false):
 //   {
-//     mode: "absolute" | "relative",
+//     mode: "absolute" | "relative" | "zone",
 //     active: boolean,                // true while a touch is down on the strip
 //     left, right, up, down,
 //     upLeft, upRight, downLeft, downRight: boolean,  // only for enabled directions
 //     x, y: number | null,            // absolute mode: mapped position in rangeX/rangeY
 //     dx, dy: number | null,          // relative mode: -1..1 deflection from touch-start
 //   }
+//
+// "zone" MODE — for games that want an unambiguous, immediate single
+// direction with NO deadzone/distance/angle math at all (unlike "relative",
+// which reports a continuous dx/dy vector meant to be smoothed/interpreted
+// by the caller). The pad is split by its own two corner-to-corner
+// diagonals into 4 triangular regions, matching a classic on-screen D-pad's
+// shape — whichever region the touch is CURRENTLY in in is the reported
+// direction, recomputed fresh on every pointermove. `deadzone` and
+// `joystickRadius` are ignored in this mode (they're relative-mode-only).
+//
+// Every mode also clamps the tracked touch position to the pad's own
+// rendered rectangle before computing a direction from it — dragging a
+// thumb physically off the visible pad no longer produces a reading based
+// on a runaway off-pad position; it's always based on the nearest point
+// still inside the pad's edge.
 //
 // onTap PAYLOAD: { x: number, y: number } — position within the strip, in CSS px.
 //
@@ -186,6 +201,17 @@
       "  box-shadow: 0 0 10px rgba(77, 216, 255, 0.9); top: 50%; left: 50%;",
       "  transform: translate(-50%, -50%); pointer-events: none; }",
       ".wiz-ctrl-arrow { position: absolute; color: rgba(77, 216, 255, 0.45); font-size: 16px; pointer-events: none; }",
+      // Corner-to-corner X divider for "zone" mode — two linear-gradient
+      // "lines" drawn diagonally. Percentage-based, so it's always a true
+      // corner-to-corner X regardless of the pad's actual rendered w:h
+      // ratio, with no JS math needed to compute an angle.
+      ".wiz-ctrl-zone-divider { position: absolute; inset: 0; pointer-events: none;",
+      "  background-image:",
+      "    linear-gradient(to bottom right, transparent calc(50% - 1px), rgba(77, 216, 255, 0.25) 50%, transparent calc(50% + 1px)),",
+      "    linear-gradient(to bottom left, transparent calc(50% - 1px), rgba(77, 216, 255, 0.25) 50%, transparent calc(50% + 1px)); }",
+      ".wiz-ctrl-zone-arrow { position: absolute; color: rgba(77, 216, 255, 0.45); font-size: 18px; pointer-events: none;",
+      "  opacity: 0.6; transition: opacity 0.1s ease, text-shadow 0.1s ease; }",
+      ".wiz-ctrl-zone-arrow.active { opacity: 1; color: #4dd8ff; text-shadow: 0 0 8px rgba(77, 216, 255, 0.9); }",
       ".wiz-ctrl-tap-flash { position: absolute; inset: 0; background: rgba(77, 216, 255, 0.16); opacity: 0; pointer-events: none; }",
       ".wiz-ctrl-tap-flash.flash { opacity: 1; transition: opacity 0.25s ease; }",
       ".wiz-ctrl-resize-handle { position: absolute; right: -3px; bottom: -3px; width: 26px; height: 26px;",
@@ -576,6 +602,32 @@
           this._markerV.style.left = "50%";
           root.appendChild(this._markerV);
         }
+      } else if (this.options.mode === "zone") {
+        // "zone" mode — the pad's own diagonals split it into 4 triangular
+        // regions (see _processPosition); draw the X divider plus one arrow
+        // per enabled cardinal direction, highlighted via .active whenever
+        // that's the CURRENT zone the touch is in.
+        const divider = document.createElement("div");
+        divider.className = "wiz-ctrl-zone-divider";
+        root.appendChild(divider);
+
+        this._zoneArrows = {};
+        const zoneArrowMap = { left: "◀", right: "▶", up: "▲", down: "▼" };
+        const zoneArrowStyle = {
+          left: { left: "10px", top: "50%", transform: "translateY(-50%)" },
+          right: { right: "10px", top: "50%", transform: "translateY(-50%)" },
+          up: { left: "50%", top: "6px", transform: "translateX(-50%)" },
+          down: { left: "50%", bottom: "6px", transform: "translateX(-50%)" },
+        };
+        Object.keys(zoneArrowMap).forEach((dir) => {
+          if (!dirs[dir]) return;
+          const el = document.createElement("div");
+          el.className = "wiz-ctrl-zone-arrow";
+          el.textContent = zoneArrowMap[dir];
+          Object.assign(el.style, zoneArrowStyle[dir]);
+          root.appendChild(el);
+          this._zoneArrows[dir] = el;
+        });
       } else {
         // relative / virtual-joystick mode — base appears at the touch-down point
         this._joyBase = document.createElement("div");
@@ -716,8 +768,14 @@
       }
 
       const rect = this.element.getBoundingClientRect();
-      this._startX = e.clientX - rect.left;
-      this._startY = e.clientY - rect.top;
+      // Clamped to the pad's own rectangle — a touch that starts (rare, but
+      // possible with touch imprecision right at an edge) fractionally
+      // outside it should still read as the nearest valid point inside it,
+      // not an unbounded position. See _onPointerMove for the same clamp
+      // applied on every subsequent move, which is the far more common case
+      // (a thumb drifting off the pad mid-drag).
+      this._startX = clamp(e.clientX - rect.left, 0, rect.width);
+      this._startY = clamp(e.clientY - rect.top, 0, rect.height);
       this._lastX = this._startX;
       this._lastY = this._startY;
       this._startTime = performance.now();
@@ -766,8 +824,12 @@
       }
 
       const rect = this.element.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      // Clamped to the pad's own rectangle before any direction/zone math
+      // runs — however far off the visible pad the thumb physically drags,
+      // the reading is always based on the nearest point still inside its
+      // boundary, never an unbounded/ambiguous off-pad position.
+      const x = clamp(e.clientX - rect.left, 0, rect.width);
+      const y = clamp(e.clientY - rect.top, 0, rect.height);
       this._lastX = x;
       this._lastY = y;
       this._processPosition(x, y);
@@ -797,6 +859,9 @@
       if (this._markerH) this._markerH.classList.remove("active");
       if (this._markerV) this._markerV.classList.remove("active");
       if (this._joyBase) this._joyBase.classList.remove("active");
+      if (this._zoneArrows) {
+        Object.keys(this._zoneArrows).forEach((dir) => this._zoneArrows[dir].classList.remove("active"));
+      }
 
       this._emitMove({ active: false });
     }
@@ -862,6 +927,41 @@
         }
 
         Object.assign(payload, this._buildDirectionFlags(leftOn, rightOn, upOn, downOn));
+        this._emitMove(payload);
+      } else if (this.options.mode === "zone") {
+        // "zone" mode — normalize the (already pad-rect-clamped, see
+        // _onPointerDown/_onPointerMove) touch position to -1..1 on each
+        // axis first, using the pad's OWN half-width/half-height. That turns
+        // any pad aspect ratio into a unit square, so comparing |nx| vs |ny|
+        // below is exactly a corner-to-corner X split regardless of the
+        // pad's actual w:h ratio — no deadzone, no distance/angle math, and
+        // (unlike "relative") no reference to where the touch started:
+        // this is purely "where is it RIGHT NOW", recomputed fresh every event.
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const nx = needsX && cx > 0 ? (x - cx) / cx : 0;
+        const ny = needsY && cy > 0 ? (y - cy) / cy : 0;
+
+        let leftOn = false;
+        let rightOn = false;
+        let upOn = false;
+        let downOn = false;
+        if (needsX || needsY) {
+          if (Math.abs(nx) >= Math.abs(ny)) {
+            leftOn = needsX && nx < 0;
+            rightOn = needsX && nx >= 0;
+          } else {
+            upOn = needsY && ny < 0;
+            downOn = needsY && ny >= 0;
+          }
+        }
+
+        if (this._zoneArrows) {
+          const active = { left: leftOn, right: rightOn, up: upOn, down: downOn };
+          Object.keys(this._zoneArrows).forEach((dir) => this._zoneArrows[dir].classList.toggle("active", active[dir]));
+        }
+
+        const payload = Object.assign({ active: true }, this._buildDirectionFlags(leftOn, rightOn, upOn, downOn));
         this._emitMove(payload);
       } else {
         // relative / virtual-joystick mode
