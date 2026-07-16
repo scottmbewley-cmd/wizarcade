@@ -176,9 +176,6 @@ function isFloor(row, col) {
 function isHouseArea(row, col) {
   return row >= GHOST_HOUSE.rowStart && row <= GHOST_HOUSE.rowEnd && col >= GHOST_HOUSE.colStart && col <= GHOST_HOUSE.colEnd;
 }
-function isHouseInteriorStrict(row, col) {
-  return row > GHOST_HOUSE.rowStart && row < GHOST_HOUSE.rowEnd && col > GHOST_HOUSE.colStart && col < GHOST_HOUSE.colEnd;
-}
 function isPowerPelletTile(row, col) {
   return POWER_PELLET_TILES.some((t) => t.row === row && t.col === col);
 }
@@ -791,7 +788,14 @@ class MainScene extends Phaser.Scene {
     for (let r = 0; r < MAZE_ROWS; r++) {
       for (let c = 0; c < MAZE_COLS; c++) {
         if (MAZE_LAYOUT[r][c] === "#") continue;
-        if (isHouseInteriorStrict(r, c)) continue;
+        // Must match isHouseArea exactly (not just its strict interior) —
+        // the ghost house's door tile (row 9, col 7 — GHOST_HOUSE.doorRow/
+        // doorCol) is floor and sits right at the maze's horizontal center,
+        // but the player can never actually walk onto it (choosePlayerDir
+        // blocks all of isHouseArea, door included, with no exception for
+        // the player the way ghosts get canPassHouse). A pellet placed
+        // there before was permanently uneatable, softlocking the round.
+        if (isHouseArea(r, c)) continue;
         const power = isPowerPelletTile(r, c);
         const sprite = this.add.image(tileToPixelX(c), tileToPixelY(r), power ? "powerPellet" : "pellet").setDepth(2);
         if (power) {
