@@ -44,28 +44,46 @@ const CONFIG = {
   BOSS_SPAWN_TIME: 60,     // seconds into the run the boss appears
   SHIELD_MAX: 100,
 
-  CROSSHAIR_SPEED: 340,    // px/sec at the fixed 480x800 design resolution
+  // Sector steering — the reticle doesn't fly freely under raw per-frame
+  // velocity; it steps between fixed grid-cell centers (one cell per
+  // direction press, rate-limited) and eases smoothly toward whichever
+  // cell is currently targeted. Continuous free aiming — even the
+  // proportional analog version — proved too twitchy/imprecise to
+  // reliably land on a moving target in playtesting. Landing "in the
+  // right cell" is far more forgiving than needing pixel-precise control,
+  // especially on a touch pad.
+  SECTOR_COLS: 7,
+  SECTOR_ROWS: 9,
+  SECTOR_MARGIN: 16,     // inset from the canvas edge the grid is built within
+  SECTOR_STEP_MS: 110,   // min time between steps on one axis while a direction is held
+  SECTOR_EASE_RATE: 12,  // higher = snappier catch-up to the target cell (not a speed cap)
 
   BURST_SIZE: 5,           // bolts per burst (also the effective "max active" cap)
   BURST_GAP_MS: 65,        // time between bolts within a burst
   BURST_COOLDOWN_MS: 480,  // pause after a burst before the next one starts
   BOLT_SPEED: 900,         // px/sec
 
-  // Trimmed from the original tuning — playtesting found the screen too
-  // busy with fighters/debris at once.
-  ENEMY_SPAWN_MIN_MS: 1700,
-  ENEMY_SPAWN_MAX_MS: 3000,
-  ENEMY_MAX_ALIVE: 3,
+  // Trimmed further from the original tuning — playtesting found the
+  // screen too busy even at the first cut, and fighters/rocks were
+  // spawning close enough to already read as "appearing" at a noticeable
+  // size instead of growing gradually from a genuinely distant start.
+  ENEMY_SPAWN_MIN_MS: 2600,
+  ENEMY_SPAWN_MAX_MS: 4400,
+  ENEMY_MAX_ALIVE: 2,
   ENEMY_HP: 3,
   ENEMY_FIRE_MIN_MS: 1600,
   ENEMY_FIRE_MAX_MS: 3400,
   ENEMY_PROJECTILE_Z_SPEED: 7,
+  ENEMY_Z_SPAWN_MIN: 26,       // far spawn distance, was a near "already in combat range" 13-17
+  ENEMY_Z_SPAWN_MAX: 34,
+  ENEMY_Z_APPROACH_SPEED: 1.4, // z-units/sec closed continuously while alive, not eased-in over a fraction of lifespan
+  ENEMY_Z_FLOOR: 6,            // never closes nearer than this while weaving
 
-  ROCK_SPAWN_MIN_MS: 2200,
-  ROCK_SPAWN_MAX_MS: 3800,
-  ROCK_MAX_ALIVE: 3,
-  ROCK_Z_START: 30,
-  ROCK_Z_SPEED: 5.6,
+  ROCK_SPAWN_MIN_MS: 3200,
+  ROCK_SPAWN_MAX_MS: 5200,
+  ROCK_MAX_ALIVE: 2,
+  ROCK_Z_START: 55,   // was 30 — spawns much further out now
+  ROCK_Z_SPEED: 4.0,  // was 5.6 — slower base approach speed
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
@@ -268,16 +286,22 @@ class MainScene extends Phaser.Scene {
 
     this.createController();
 
-    this.padVec = { x: 0, y: 0 };
+    this.padDirs = { left: false, right: false, up: false, down: false };
     this.controller.onMove((data) => {
-      this.padVec.x = data.active && data.dx != null ? data.dx : 0;
-      this.padVec.y = data.active && data.dy != null ? data.dy : 0;
+      this.padDirs.left = !!(data.active && data.left);
+      this.padDirs.right = !!(data.active && data.right);
+      this.padDirs.up = !!(data.active && data.up);
+      this.padDirs.down = !!(data.active && data.down);
     });
 
     this.state = 'start'; // 'start' | 'playing' | 'ended'
     this.runTime = 0;
     this.score = 0;
     this.shield = CONFIG.SHIELD_MAX;
+    this.sectorCol = Math.floor(CONFIG.SECTOR_COLS / 2);
+    this.sectorRow = Math.floor(CONFIG.SECTOR_ROWS / 2);
+    this.stepAtX = 0;
+    this.stepAtY = 0;
     this.crosshair = { x: centerX, y: centerY };
 
     this.stars = Array.from({ length: CONFIG.STAR_COUNT }, () => this.makeStar());
@@ -331,18 +355,17 @@ class MainScene extends Phaser.Scene {
     this.keys[e.code] = false;
   }
 
-  // "relative" mode (a free virtual joystick) instead of Munch Man's
-  // "zone" mode — the reticle needs true diagonals, which zone mode can't
-  // give (it only ever reports one of 4 cardinal directions at a time).
-  // The controller's raw dx/dy (not its on/off direction flags) drives
-  // movement — see moveInput() — for proportional analog control: a
-  // light push moves the reticle slowly, a full push reaches max speed.
-  // Digital-only touch input (full speed the instant a deadzone is
-  // crossed) made fine aiming impossible in playtesting.
+  // "zone" mode now (matching Munch Man/Slither exactly) — sector
+  // steering only ever needs to know "is a direction currently held",
+  // the same single unambiguous reading zone mode already gives those
+  // games for their own grid movement. No deadzone/distance/angle math,
+  // no analog magnitude to read — the smooth "glide" feel comes from
+  // easing toward the target cell in sectorTarget()/stepGameplay(), not
+  // from the input itself needing to be analog.
   createController() {
     this.controller = new WizController({
       target: document.getElementById('page-frame'),
-      mode: 'relative',
+      mode: 'zone',
       directions: { left: true, right: true, up: true, down: true },
       tap: false,
       label: 'AIM',
@@ -357,19 +380,27 @@ class MainScene extends Phaser.Scene {
     });
   }
 
-  moveInput() {
-    let kx = 0, ky = 0;
-    if (this.keys.ArrowLeft || this.keys.KeyA) kx -= 1;
-    if (this.keys.ArrowRight || this.keys.KeyD) kx += 1;
-    if (this.keys.ArrowUp || this.keys.KeyW) ky -= 1;
-    if (this.keys.ArrowDown || this.keys.KeyS) ky += 1;
-    if (kx !== 0 && ky !== 0) { const inv = 1 / Math.SQRT2; kx *= inv; ky *= inv; }
+  // Combined keyboard + touch-pad direction state. Keyboard can hold two
+  // perpendicular keys at once for a true diagonal step; zone mode only
+  // ever reports one axis at a time, so touch-only diagonal movement
+  // happens by alternating steps across consecutive ticks instead — still
+  // reads as a smooth diagonal path once eased.
+  dirInput() {
+    return {
+      left: !!(this.keys.ArrowLeft || this.keys.KeyA || this.padDirs.left),
+      right: !!(this.keys.ArrowRight || this.keys.KeyD || this.padDirs.right),
+      up: !!(this.keys.ArrowUp || this.keys.KeyW || this.padDirs.up),
+      down: !!(this.keys.ArrowDown || this.keys.KeyS || this.padDirs.down),
+    };
+  }
 
-    let x = kx + this.padVec.x;
-    let y = ky + this.padVec.y;
-    const mag = Math.hypot(x, y);
-    if (mag > 1) { x /= mag; y /= mag; }
-    return { x, y };
+  sectorTarget() {
+    const cellW = (GAME_WIDTH - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_COLS;
+    const cellH = (GAME_HEIGHT - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_ROWS;
+    return {
+      x: CONFIG.SECTOR_MARGIN + (this.sectorCol + 0.5) * cellW,
+      y: CONFIG.SECTOR_MARGIN + (this.sectorRow + 0.5) * cellH,
+    };
   }
 
   makeStar() {
@@ -383,7 +414,7 @@ class MainScene extends Phaser.Scene {
   }
 
   spawnEnemy() {
-    const baseZ = 13 + Math.random() * 4;
+    const baseZ = rand(CONFIG.ENEMY_Z_SPAWN_MIN, CONFIG.ENEMY_Z_SPAWN_MAX);
     this.enemies.push({
       x: (Math.random() - 0.5) * 16,
       y: (Math.random() - 0.5) * 8,
@@ -501,12 +532,24 @@ class MainScene extends Phaser.Scene {
   }
 
   stepGameplay(dt, now) {
-    const mv = this.moveInput();
-    this.crosshair.x += mv.x * CONFIG.CROSSHAIR_SPEED * dt;
-    this.crosshair.y += mv.y * CONFIG.CROSSHAIR_SPEED * dt;
-    const margin = 16;
-    this.crosshair.x = Math.max(margin, Math.min(GAME_WIDTH - margin, this.crosshair.x));
-    this.crosshair.y = Math.max(margin, Math.min(GAME_HEIGHT - margin, this.crosshair.y));
+    // Sector steering: each axis steps the target cell by one, at most
+    // once per SECTOR_STEP_MS while its direction is held (independent
+    // per-axis timers, so holding two perpendicular directions steps both
+    // — a keyboard diagonal). The crosshair never jumps to the new cell;
+    // it's eased toward whatever sectorTarget() currently is every frame.
+    const dir = this.dirInput();
+    if (now >= this.stepAtX) {
+      if (dir.left) { this.sectorCol = Math.max(0, this.sectorCol - 1); this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
+      else if (dir.right) { this.sectorCol = Math.min(CONFIG.SECTOR_COLS - 1, this.sectorCol + 1); this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
+    }
+    if (now >= this.stepAtY) {
+      if (dir.up) { this.sectorRow = Math.max(0, this.sectorRow - 1); this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
+      else if (dir.down) { this.sectorRow = Math.min(CONFIG.SECTOR_ROWS - 1, this.sectorRow + 1); this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
+    }
+    const target = this.sectorTarget();
+    const ease = 1 - Math.exp(-CONFIG.SECTOR_EASE_RATE * dt);
+    this.crosshair.x += (target.x - this.crosshair.x) * ease;
+    this.crosshair.y += (target.y - this.crosshair.y) * ease;
 
     this.updateFire(now);
 
@@ -525,9 +568,17 @@ class MainScene extends Phaser.Scene {
 
     for (const e of this.enemies) {
       e.age += dt;
-      if (e.age < e.lifespan * 0.35) {
-        e.z += (e.baseZ * 0.55 - e.z) * dt * 0.8;
-      } else if (e.age > e.lifespan) {
+      // Continuous slow approach for the whole time it's alive (not an
+      // early ease-in to a near "combat range" followed by holding
+      // there) — spawning far out AND closing gradually the entire
+      // lifespan is what actually reads as "growing bigger slowly" per
+      // the perspective system, rather than jumping to a noticeable size
+      // right after spawn. Floors out at ENEMY_Z_FLOOR so it still ends
+      // up close enough to be a real target if it survives long enough;
+      // many will simply peel off again (below) before ever reaching it.
+      if (e.age <= e.lifespan) {
+        if (e.z > CONFIG.ENEMY_Z_FLOOR) e.z = Math.max(CONFIG.ENEMY_Z_FLOOR, e.z - CONFIG.ENEMY_Z_APPROACH_SPEED * dt);
+      } else {
         e.z += dt * 8;
       }
       const t = now / 1000;
@@ -548,7 +599,7 @@ class MainScene extends Phaser.Scene {
 
     for (const r of this.rocks) {
       const closeness = (CONFIG.ROCK_Z_START - r.z) / CONFIG.ROCK_Z_START;
-      r.z -= (CONFIG.ROCK_Z_SPEED + closeness * 3) * dt;
+      r.z -= (CONFIG.ROCK_Z_SPEED + closeness * 2) * dt;
       r.spin += r.spinSpeed * dt;
       if (r.z <= 1.1) {
         r.dead = true;
@@ -871,6 +922,9 @@ class MainScene extends Phaser.Scene {
 
     this.state = 'playing';
     this.runTime = 0; this.score = 0; this.shield = CONFIG.SHIELD_MAX;
+    this.sectorCol = Math.floor(CONFIG.SECTOR_COLS / 2);
+    this.sectorRow = Math.floor(CONFIG.SECTOR_ROWS / 2);
+    this.stepAtX = 0; this.stepAtY = 0;
     this.crosshair = { x: centerX, y: centerY };
     this.enemies = []; this.rocks = []; this.bolts = []; this.enemyShots = []; this.particles = [];
     this.boss = null; this.bossSpawned = false; this.bossKilled = false;
