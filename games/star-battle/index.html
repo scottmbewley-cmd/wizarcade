@@ -2,8 +2,44 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>STAR BATTLE</title>
+<!--
+  Same rationale as Munch Man/Slither: mobile/in-app browsers (Discord's
+  especially) can keep serving a stale index.html well after a fresh
+  deploy, with no visible sign anything is wrong. Best-effort ask for
+  phone-side caches to treat the document itself as never cacheable.
+-->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Star Battle — WizArcade</title>
+<meta property="og:title" content="Star Battle">
+<meta property="og:description" content="First-person cockpit space shooter. Survive 90 seconds.">
+<meta property="og:image" content="https://scottmbewley-cmd.github.io/wizarcade/assets/star-battle-logo.png">
+<meta property="og:url" content="https://scottmbewley-cmd.github.io/wizarcade/games/star-battle/index.html">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  // iOS Safari BUG FIX — same as the other WizArcade games: the address
+  // bar shows/hides dynamically and raw 100vh doesn't reliably track the
+  // actually-visible viewport there. Mirrored into --vvw/--vvh and read
+  // by resize() below instead of window.innerWidth/innerHeight directly.
+  (function () {
+    function syncViewportVars() {
+      var vv = window.visualViewport;
+      var w = vv ? vv.width : window.innerWidth;
+      var h = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty("--vvw", w + "px");
+      document.documentElement.style.setProperty("--vvh", h + "px");
+    }
+    syncViewportVars();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewportVars);
+      window.visualViewport.addEventListener("scroll", syncViewportVars);
+    }
+    window.addEventListener("resize", syncViewportVars);
+    window.addEventListener("orientationchange", syncViewportVars);
+  })();
+</script>
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -77,14 +113,15 @@
 
 <!-- Start Screen -->
 <div id="startScreen" class="overlay">
-  <img class="logo" src="Space_Battle.logo%20.png" alt="Star Battle">
+  <img class="logo" src="../../assets/star-battle-logo.png" alt="Star Battle">
   <h1>STAR BATTLE</h1>
   <p>
-    WASD / ARROW KEYS to steer the targeting reticle. Weapons fire automatically.<br>
-    Shoot down fighters and incoming debris. A capital ship closes in at the 60s mark &mdash;
-    find and hit its weak point before it rams you. Survive 90 seconds.
+    WASD / ARROW KEYS (or the MOVE pad on touch) to steer the targeting reticle.
+    Weapons fire automatically. Shoot down fighters and incoming debris. A capital
+    ship closes in at the 60s mark &mdash; find and hit its weak point before it
+    rams you. Survive 90 seconds.
   </p>
-  <button id="startBtn" class="glowBtn">START</button>
+  <button id="startBtn" class="glowBtn">TAP TO START</button>
 </div>
 
 <!-- Game Over / Run Complete Screen -->
@@ -92,9 +129,10 @@
   <h1 id="endTitle">GAME OVER</h1>
   <p id="endSubtitle">SHIELDS DOWN</p>
   <div class="bigScore">SCORE: <span id="endScore">0</span></div>
-  <p class="flicker">PRESS ENTER TO RESTART</p>
+  <button id="restartBtn" class="glowBtn flicker">TAP TO RESTART</button>
 </div>
 
+<script src="../../controller/controller.js?v=1"></script>
 <script>
 /* =========================================================================
    STAR BATTLE
@@ -172,7 +210,14 @@ let W = 0, H = 0, centerX = 0, centerY = 0, FOCAL = 0;
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  W = window.innerWidth; H = window.innerHeight;
+  // Prefer visualViewport over raw innerWidth/innerHeight — see the
+  // iOS Safari bug-fix comment in <head>. Its address bar shows/hides
+  // dynamically without firing a plain 'resize' in some cases, so this
+  // is also driven by visualViewport's own resize/scroll events below,
+  // not just window's.
+  const vv = window.visualViewport;
+  W = vv ? vv.width : window.innerWidth;
+  H = vv ? vv.height : window.innerHeight;
   canvas.width = W * dpr; canvas.height = H * dpr;
   canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -180,6 +225,11 @@ function resize() {
   FOCAL = Math.min(W, H) * 0.62;
 }
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', resize);
+  window.visualViewport.addEventListener('scroll', resize);
+}
 resize();
 
 // Perspective projection: world (x,y,z) -> screen space. Size scales identically.
@@ -192,13 +242,13 @@ function project(x, y, z) {
 // Audio — real files only (no synthesized music/sfx). A small rotating
 // pool lets the laser sound overlap itself during rapid-fire bursts.
 // ---------------------------------------------------------------------
-const music = new Audio('Space_Battle.music.mp3');
+const music = new Audio('../../assets/star-battle-music.mp3');
 music.loop = true;
 music.volume = 0.55;
 
 const LASER_POOL_SIZE = 6;
 const laserPool = Array.from({ length: LASER_POOL_SIZE }, () => {
-  const a = new Audio('Laser-zap-90575.mp3');
+  const a = new Audio('../../assets/star-battle-laser.mp3');
   a.volume = 0.35;
   return a;
 });
@@ -219,7 +269,7 @@ function playCrashCue() {
   const hits = [0, 90, 170, 260];
   hits.forEach((delay) => {
     setTimeout(() => {
-      const a = new Audio('Laser-zap-90575.mp3');
+      const a = new Audio('../../assets/star-battle-laser.mp3');
       a.volume = 0.5;
       a.playbackRate = 0.42 + Math.random() * 0.12;
       a.play().catch(() => {});
@@ -237,6 +287,10 @@ muteBtn.addEventListener('click', () => {
 
 // ---------------------------------------------------------------------
 // Input — 8-way digital movement, normalized diagonals, instant stop.
+// Keyboard (desktop) and the shared WizArcade WizController touch pad
+// (phones/tablets, played straight from the Discord link) both feed the
+// same padDirs-style booleans into moveInput() below, so either source
+// (or both at once) drives the exact same snappy, normalized movement.
 // ---------------------------------------------------------------------
 const keys = Object.create(null);
 const MOVE_KEYS = new Set([
@@ -253,12 +307,47 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
+// Touch pad direction state, driven by the shared controller's onMove
+// callback below. Mirrors `keys` in shape so moveInput() can just OR
+// the two sources together.
+const padDirs = { left: false, right: false, up: false, down: false };
+
+// "relative" mode (a free virtual joystick) is used instead of the other
+// games' "zone" mode because Star Battle's reticle needs true diagonals —
+// zone mode only ever reports one of 4 cardinal directions at a time. The
+// boolean flags (not the raw dx/dy) are read here, deliberately, so a
+// touch push behaves exactly like a held key: fixed snappy speed the
+// instant the deadzone is crossed, not proportional to how far the thumb
+// drags.
+const controller = new WizController({
+  target: document.body,
+  mode: 'relative',
+  directions: { left: true, right: true, up: true, down: true },
+  tap: false,
+  label: 'AIM',
+  adjustable: true,
+  storageKey: 'wizarcade-star-battle-layout',
+  anchorBelow: canvas,
+  defaultWidth: 227,
+  defaultHeight: 153,
+  minWidth: 140,
+  minHeight: 90,
+  maxWidth: 400,
+  maxHeight: 300,
+});
+controller.onMove((data) => {
+  padDirs.left = data.active && data.left;
+  padDirs.right = data.active && data.right;
+  padDirs.up = data.active && data.up;
+  padDirs.down = data.active && data.down;
+});
+
 function moveInput() {
   let x = 0, y = 0;
-  if (keys.ArrowLeft || keys.KeyA) x -= 1;
-  if (keys.ArrowRight || keys.KeyD) x += 1;
-  if (keys.ArrowUp || keys.KeyW) y -= 1;
-  if (keys.ArrowDown || keys.KeyS) y += 1;
+  if (keys.ArrowLeft || keys.KeyA || padDirs.left) x -= 1;
+  if (keys.ArrowRight || keys.KeyD || padDirs.right) x += 1;
+  if (keys.ArrowUp || keys.KeyW || padDirs.up) y -= 1;
+  if (keys.ArrowDown || keys.KeyS || padDirs.down) y += 1;
   if (x !== 0 && y !== 0) { const inv = 1 / Math.SQRT2; x *= inv; y *= inv; }
   return { x, y };
 }
@@ -920,6 +1009,7 @@ function endRun(reason) {
 }
 
 document.getElementById('startBtn').addEventListener('click', beginRun);
+document.getElementById('restartBtn').addEventListener('click', beginRun);
 
 // ---------------------------------------------------------------------
 // Main loop
