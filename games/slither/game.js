@@ -103,10 +103,9 @@ function drawFoodTexture(gfx, key) {
 // --- Audio — plain Web Audio. The eat blip is still a synthesized
 // oscillator, but game-over now plays a licensed clip (assets/slither-
 // game-over.mp3, fetched + decoded once at load), same pattern as Munch
-// Man's music/game-over clips. It's a short one-shot SFX rather than a
-// looping background track, so the iOS media-session "ambient vs.
-// playback category" unlock trick Munch Man needs for its looping music
-// doesn't apply here. Wrapped in try/catch with a no-op fallback so a
+// Man's clips: assets/slither-music.mp3 loops as the backing track,
+// assets/slither-game-over.mp3 plays once on death. The eat blip stays a
+// synthesized oscillator. Wrapped in try/catch with a no-op fallback so a
 // busted AudioContext (or none at all) can never take the rest of the
 // game down with it. ---
 const AudioSys = (() => {
@@ -114,7 +113,7 @@ const AudioSys = (() => {
     return buildAudioSys();
   } catch (e) {
     const noop = () => {};
-    return { playEat: noop, playGameOver: noop };
+    return { playMusic: noop, stopMusic: noop, playEat: noop, playGameOver: noop };
   }
 
   function buildAudioSys() {
@@ -127,16 +126,80 @@ const AudioSys = (() => {
       if (ctx.state === "running") cb();
       else ctx.resume().then(cb).catch(() => {});
     }
+
+    // iOS Safari specific: on its own, this page's Web Audio content plays
+    // through the "ambient" audio session category — routed through the
+    // Ringer/Alerts volume + physical mute switch, NOT the Media volume/
+    // speaker path. A muted=false <video> element with a real (if silent)
+    // audio track, played on the very first gesture, nudges Safari's
+    // shared per-page audio session into the "playback" category instead
+    // — see Munch Man's game.js for the fuller version of this comment.
+    // Only matters once there's a genuine looping background track (the
+    // music added here); the one-shot game-over clip alone didn't need it.
+    let iosUnlockDone = false;
+    function unlockIOSMediaSession() {
+      if (iosUnlockDone) return;
+      iosUnlockDone = true;
+      const video = document.createElement("video");
+      video.setAttribute("playsinline", "");
+      video.muted = false;
+      video.src = "../../assets/silent-audio-unlock.mp4";
+      video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
+      document.body.appendChild(video);
+      video.play().catch(() => {});
+      video.addEventListener("ended", () => video.remove(), { once: true });
+    }
+
     ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
-      window.addEventListener(evt, () => ensureRunning(() => {}), { once: true })
+      window.addEventListener(
+        evt,
+        () => {
+          ensureRunning(() => {});
+          unlockIOSMediaSession();
+        },
+        { once: true }
+      )
     );
 
     const buffers = {};
-    fetch("../../assets/slither-game-over.mp3")
-      .then((r) => r.arrayBuffer())
-      .then((data) => ctx.decodeAudioData(data))
-      .then((buf) => (buffers.gameOver = buf))
-      .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
+    function loadClip(name, url) {
+      fetch(url)
+        .then((r) => r.arrayBuffer())
+        .then((data) => ctx.decodeAudioData(data))
+        .then((buf) => {
+          buffers[name] = buf;
+          if (name === "music" && musicWanted) ensureRunning(tryStartMusic);
+        })
+        .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
+    }
+    loadClip("music", "../../assets/slither-music.mp3");
+    loadClip("gameOver", "../../assets/slither-game-over.mp3");
+
+    let musicSource = null;
+    let musicWanted = false;
+    function tryStartMusic() {
+      if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") return;
+      musicSource = ctx.createBufferSource();
+      musicSource.buffer = buffers.music;
+      musicSource.loop = true;
+      musicSource.connect(master);
+      musicSource.start(0);
+    }
+    function playMusic() {
+      musicWanted = true;
+      ensureRunning(tryStartMusic); // no-op until BOTH the context is running AND the clip has decoded
+    }
+    function stopMusic() {
+      musicWanted = false;
+      if (!musicSource) return;
+      try {
+        musicSource.stop();
+      } catch (e) {
+        // already stopped/ended — safe to ignore
+      }
+      musicSource.disconnect();
+      musicSource = null;
+    }
 
     function tone(freq, dur, type, peakGain, whenOffset) {
       ensureRunning(() => {
@@ -169,7 +232,7 @@ const AudioSys = (() => {
       });
     }
 
-    return { playEat, playGameOver };
+    return { playMusic, stopMusic, playEat, playGameOver };
   }
 })();
 
@@ -321,6 +384,7 @@ class MainScene extends Phaser.Scene {
     this.spawnFood();
     this.renderSnake();
     this.showControlHint();
+    AudioSys.playMusic();
   }
 
   // --- Food ---
@@ -441,6 +505,7 @@ class MainScene extends Phaser.Scene {
   onSelfCollision() {
     if (this.gameOver) return;
     this.gameOver = true;
+    AudioSys.stopMusic();
     AudioSys.playGameOver();
 
     const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72);
