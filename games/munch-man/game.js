@@ -417,7 +417,13 @@ const AudioSys = (() => {
   function buildAudioSys() {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   AudioDebug.log("ctx created, state=" + ctx.state + ", sampleRate=" + ctx.sampleRate);
-  setInterval(() => AudioDebug.log("ctx.state poll: " + ctx.state), 2000);
+  // "statechange" fires immediately on every transition — including into
+  // and out of Safari's non-standard "interrupted" state (distinct from
+  // the spec's suspended/running/closed; iOS uses it when something at
+  // the OS/audio-session level is blocking playback). ensureRunning()
+  // only reacts when IT calls resume(); this catches every transition
+  // even ones triggered externally.
+  ctx.addEventListener("statechange", () => AudioDebug.log("ctx statechange -> " + ctx.state));
 
   const master = ctx.createGain();
   master.gain.value = 0.6;
@@ -1304,6 +1310,13 @@ const config = {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
+  // AudioSys is the only sound system this game uses (see above) — Phaser
+  // otherwise auto-creates its own separate Web Audio context regardless,
+  // and on iOS Safari two competing AudioContexts appear to be exactly
+  // what pushes the real one into the non-standard "interrupted" state
+  // (confirmed via on-device diagnostics: ctx.state went suspended →
+  // interrupted before any of our own code could plausibly cause it).
+  audio: { noAudio: true },
   scene: [MainScene],
 };
 
