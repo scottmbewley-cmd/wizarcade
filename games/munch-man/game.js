@@ -2,10 +2,14 @@
 //
 // Game #2 in the WizArcade suite. Same shared conventions as
 // games/test-invaders/: code-drawn pixel-art textures (no external image
-// assets), delta-time-scaled movement, /controller/controller.js as the
-// only input source (plus a keyboard fallback for desktop testing), a
-// retro HUD score readout, and an endless round-over-round difficulty
-// ramp with single-hit death + instant "TAP TO RETRY".
+// assets), delta-time-scaled movement, a retro HUD score readout, and an
+// endless round-over-round difficulty ramp with single-hit death + instant
+// "TAP TO RETRY". Input is the shared /controller/controller.js module in
+// "relative" (virtual-joystick) mode — see createController() — with its
+// continuous dx/dy reduced to a single dominant-axis direction (with
+// hysteresis against flip-flopping near the diagonal) since movement here
+// is grid-locked, one tile at a time, not free continuous movement.
+// Keyboard arrows/WASD work too, for desktop testing.
 //
 // Movement is grid-locked (one tile at a time along a fixed maze), not
 // free continuous movement — see stepEntity() below for the shared
@@ -13,6 +17,13 @@
 // choosePlayerDir()/chooseGhostDir() for how a turn queued slightly
 // before an intersection gets buffered and applied the instant the
 // intersection tile is reached.
+//
+// Audio (see AudioSys below) is plain Web Audio, not Phaser's sound
+// manager or <audio> tags: the two licensed clips (backing track, game-
+// over jingle — assets/munch-man-music.mp3 and assets/munch-man-game-
+// over.mp3, fetched + decoded once at load) and all procedurally
+// synthesized SFX (pellet, power pellet, ghost-eaten, round-clear — plain
+// oscillators, no files) share one AudioContext and master gain node.
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -88,11 +99,15 @@ const COLOR_FRIGHTENED = 0x4d5dff;
 const COLOR_FRIGHTENED_FLASH = 0xffffff;
 
 // --- Speeds, tiles/second (converted to px/s via TILE where used) ---
-const PLAYER_SPEED_TILES = 6.5;
-const GHOST_BASE_SPEED_START = 4.4;
-const GHOST_SPEED_GROWTH = 0.1; // per round, unbounded — matches the suite's endless ramp convention
+// Two successive 25% cuts from the original tuning (player, ghost base/
+// growth, and eaten-ghost return speed) — 0.75 * 0.75 = 0.5625 of the
+// original values overall. GHOST_FRIGHTENED_SPEED_MULT is a multiplier of
+// the (already-reduced) base speed, so it doesn't need its own cut.
+const PLAYER_SPEED_TILES = 6.5 * 0.75 * 0.75;
+const GHOST_BASE_SPEED_START = 4.4 * 0.75 * 0.75;
+const GHOST_SPEED_GROWTH = 0.1 * 0.75 * 0.75; // per round, unbounded — matches the suite's endless ramp convention
 const GHOST_FRIGHTENED_SPEED_MULT = 0.55;
-const GHOST_EATEN_SPEED_TILES = 11;
+const GHOST_EATEN_SPEED_TILES = 11 * 0.75 * 0.75;
 
 const FRIGHTENED_START_S = 7.5;
 const FRIGHTENED_DECAY_S = 0.35; // per round
@@ -277,6 +292,139 @@ function drawScanlineTexture(gfx, key) {
   gfx.generateTexture(key, 4, 4);
 }
 
+// --- Audio ---------------------------------------------------------------
+// One shared AudioContext + master gain for everything: the two licensed
+// clips (fetched/decoded once, up front) and the procedurally synthesized
+// SFX below. Autoplay policy: browsers start a fresh AudioContext
+// "suspended" until a real user gesture — rather than trying to force
+// audible sound before that (which browsers block anyway), the context is
+// resumed on the page's first pointerdown/keydown/touchstart, whatever
+// that turns out to be (the controller's own first touch, a keyboard
+// press, anything). playMusic() can be — and is — called from create()
+// before the gesture ever happens; it just stays silent (buffered/
+// scheduled, not dropped) until the context resumes, then plays from the
+// start, so the timing works out the same either way.
+const AudioSys = (() => {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const master = ctx.createGain();
+  master.gain.value = 0.6;
+  master.connect(ctx.destination);
+
+  ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
+    window.addEventListener(
+      evt,
+      () => {
+        if (ctx.state === "suspended") ctx.resume();
+      },
+      { once: true }
+    )
+  );
+
+  const buffers = {};
+  function loadClip(name, url) {
+    fetch(url)
+      .then((r) => r.arrayBuffer())
+      .then((data) => ctx.decodeAudioData(data))
+      .then((buf) => {
+        buffers[name] = buf;
+        if (name === "music") tryStartMusic();
+      })
+      .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
+  }
+  loadClip("music", "../../assets/munch-man-music.mp3");
+  loadClip("gameOver", "../../assets/munch-man-game-over.mp3");
+
+  let musicSource = null;
+  let musicWanted = false;
+  function tryStartMusic() {
+    if (!musicWanted || musicSource || !buffers.music) return;
+    musicSource = ctx.createBufferSource();
+    musicSource.buffer = buffers.music;
+    musicSource.loop = true;
+    musicSource.connect(master);
+    musicSource.start(0);
+  }
+  function playMusic() {
+    musicWanted = true;
+    tryStartMusic(); // no-op until the music clip has finished decoding — see loadClip's callback above
+  }
+  function stopMusic() {
+    musicWanted = false;
+    if (!musicSource) return;
+    try {
+      musicSource.stop();
+    } catch (e) {
+      // already stopped/ended — safe to ignore
+    }
+    musicSource.disconnect();
+    musicSource = null;
+  }
+  function playGameOver() {
+    if (!buffers.gameOver) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buffers.gameOver;
+    src.connect(master);
+    src.start(0);
+  }
+
+  // Short oscillator blip with a quick linear attack + exponential decay —
+  // the classic retro-beep envelope. whenOffset lets a caller schedule a
+  // few of these back to back for a simple multi-note "chime".
+  function tone(freq, dur, type, peakGain, whenOffset) {
+    const t0 = ctx.currentTime + (whenOffset || 0);
+    const osc = ctx.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(peakGain, t0 + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(g);
+    g.connect(master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  // Classic "waka-waka" — alternates two pitches call to call so a run of
+  // pellets down a corridor reads as the familiar two-tone chomp instead
+  // of one flat repeated beep.
+  let pelletToggle = false;
+  function playPellet() {
+    pelletToggle = !pelletToggle;
+    tone(pelletToggle ? 950 : 540, 0.055, "square", 0.16);
+  }
+  // Distinct from a regular pellet: lower, longer, two-note descending
+  // "gulp" so the power-up moment is unmistakable at a glance (well, listen).
+  function playPowerPellet() {
+    tone(300, 0.09, "sawtooth", 0.22, 0);
+    tone(220, 0.16, "sawtooth", 0.2, 0.08);
+  }
+  // Rising 3-note arpeggio, same shape as the classic score-popup sting
+  // when a frightened ghost gets eaten.
+  function playGhostEaten() {
+    tone(500, 0.05, "square", 0.2, 0);
+    tone(750, 0.05, "square", 0.2, 0.06);
+    tone(1000, 0.09, "square", 0.22, 0.12);
+  }
+  // Short ascending fanfare for clearing a round's last pellet — mirrors
+  // showRoundText()'s own "RD N" banner (see spawnRound()/showRoundText()).
+  function playRoundClear() {
+    tone(660, 0.09, "triangle", 0.2, 0);
+    tone(880, 0.09, "triangle", 0.2, 0.1);
+    tone(1320, 0.18, "triangle", 0.22, 0.2);
+  }
+
+  return {
+    playMusic,
+    stopMusic,
+    playGameOver,
+    playPellet,
+    playPowerPellet,
+    playGhostEaten,
+    playRoundClear,
+  };
+})();
+
 // --- Shared tile-stepping movement, used by both the player and ghosts.
 // Delta-time scaled; loops (bounded) so a single frame can cross more
 // than one tile at high speed/low frame rate without losing distance.
@@ -353,10 +501,17 @@ class MainScene extends Phaser.Scene {
       .setAlpha(0.4);
   }
 
+  // The shared /controller/controller.js joystick, in "relative" mode —
+  // it hands us a continuous dx/dy (-1..1) deflection from the touch-start
+  // point on every pointermove. Movement here is grid-locked (one tile at
+  // a time, see stepEntity()), so a raw 2D vector isn't what we want to
+  // act on directly — dx/dy is reduced below to a single dominant-axis
+  // direction, with hysteresis so thumb jitter near the diagonal
+  // (dx ~= dy) doesn't flip the axis back and forth on every event.
   createController() {
-    if (this.wizController) this.wizController.destroy();
+    if (this.controller) this.controller.destroy();
 
-    this.wizController = new WizController({
+    this.controller = new WizController({
       target: document.getElementById("page-frame"),
       mode: "relative",
       directions: { left: true, right: true, up: true, down: true },
@@ -370,19 +525,52 @@ class MainScene extends Phaser.Scene {
       minHeight: 90,
       maxWidth: 400,
       maxHeight: 300,
+      deadzone: 0.35,
+      joystickRadius: 65,
     });
 
-    this.wizController.onMove((data) => {
-      if (!data.active) return;
-      const absDx = Math.abs(data.dx || 0);
-      const absDy = Math.abs(data.dy || 0);
-      if (absDx < 0.2 && absDy < 0.2) return;
-      this.dismissHint();
-      if (absDx >= absDy) {
-        this.queuedDir = data.dx > 0 ? { x: 1, y: 0 } : { x: -1, y: 0 };
-      } else {
-        this.queuedDir = data.dy > 0 ? { x: 0, y: 1 } : { x: 0, y: -1 };
+    const dirVectors = {
+      up: { x: 0, y: -1 },
+      down: { x: 0, y: 1 },
+      left: { x: -1, y: 0 },
+      right: { x: 1, y: 0 },
+    };
+    // Once a direction is picked, require the other axis to pull ahead by
+    // this ratio before switching — same idea as the old bespoke D-pad's
+    // hysteresis, just applied to controller.js's normalized dx/dy instead
+    // of raw pixel offsets.
+    const AXIS_HYSTERESIS = 1.3;
+
+    let lastDir = null;
+    let wasActive = false;
+    this.controller.onMove((data) => {
+      if (!data.active) {
+        wasActive = false;
+        return;
       }
+      if (!wasActive) {
+        wasActive = true;
+        lastDir = null; // fresh touch — free to pick either axis first
+      }
+
+      const dx = data.dx || 0;
+      const dy = data.dy || 0;
+      if (Math.hypot(dx, dy) < this.controller.options.deadzone) return; // too close to center — keep the last direction
+
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      const lastWasHorizontal = lastDir === "left" || lastDir === "right";
+      const lastWasVertical = lastDir === "up" || lastDir === "down";
+      let horizontal;
+      if (lastWasHorizontal) horizontal = !(absY > absX * AXIS_HYSTERESIS);
+      else if (lastWasVertical) horizontal = absX > absY * AXIS_HYSTERESIS;
+      else horizontal = absX >= absY;
+
+      const dir = horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
+      if (dir === lastDir) return;
+      lastDir = dir;
+      this.dismissHint();
+      this.queuedDir = dirVectors[dir];
     });
   }
 
@@ -391,7 +579,7 @@ class MainScene extends Phaser.Scene {
       .rectangle(GAME_WIDTH / 2, MAZE_OFFSET_Y + (MAZE_ROWS * TILE) / 2, 300, 90, 0x000000, 0.55)
       .setDepth(25);
     const txt = this.add
-      .text(GAME_WIDTH / 2, MAZE_OFFSET_Y + (MAZE_ROWS * TILE) / 2, "DRAG TO MOVE\nEAT EVERY DOT", {
+      .text(GAME_WIDTH / 2, MAZE_OFFSET_Y + (MAZE_ROWS * TILE) / 2, "TAP TO MOVE\nEAT EVERY DOT", {
         fontFamily: "monospace",
         fontSize: "18px",
         fontStyle: "bold",
@@ -420,6 +608,7 @@ class MainScene extends Phaser.Scene {
 
   showRoundText() {
     if (this.round === 1) return;
+    AudioSys.playRoundClear();
     const txt = this.add
       .text(GAME_WIDTH / 2, MAZE_OFFSET_Y + 60, "ROUND " + this.round, {
         fontFamily: '"Courier New", monospace',
@@ -491,6 +680,7 @@ class MainScene extends Phaser.Scene {
     this.applyDifficulty();
     this.spawnRound();
     this.showControlHint();
+    AudioSys.playMusic();
   }
 
   applyDifficulty() {
@@ -603,8 +793,10 @@ class MainScene extends Phaser.Scene {
       if (pellet.power) {
         this.score += POWER_PELLET_POINTS;
         this.triggerFrightened();
+        AudioSys.playPowerPellet();
       } else {
         this.score += PELLET_POINTS;
+        AudioSys.playPellet();
       }
     }
   }
@@ -796,6 +988,7 @@ class MainScene extends Phaser.Scene {
         this.ghostEatCount++;
         ghost.state = "eaten";
         ghost.dir = { x: 0, y: 0 };
+        AudioSys.playGhostEaten();
       } else {
         this.onPlayerCaught();
         return;
@@ -849,6 +1042,8 @@ class MainScene extends Phaser.Scene {
   onPlayerCaught() {
     if (this.gameOver) return;
     this.gameOver = true;
+    AudioSys.stopMusic();
+    AudioSys.playGameOver();
 
     const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72);
     overlay.setDepth(30);
