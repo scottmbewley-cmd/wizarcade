@@ -321,11 +321,16 @@ const AudioDebug = (() => {
     "overflow:hidden",
   ].join(";");
   document.body.appendChild(el);
+  // Capped low enough that everything always fits inside max-height without
+  // the browser silently clipping the newest lines — the old 50-line cap
+  // relied on scrolling that was never implemented, so once the box filled
+  // up, the most recent (most important) lines were invisible, hidden by
+  // overflow:hidden, not the oldest ones.
   const lines = [];
   function log(msg) {
     const t = new Date().toISOString().slice(11, 19);
     lines.push("[" + t + "] " + msg);
-    if (lines.length > 50) lines.shift();
+    if (lines.length > 14) lines.shift();
     el.textContent = lines.join("\n");
   }
   window.addEventListener("error", (e) => log("JS ERROR: " + e.message));
