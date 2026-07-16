@@ -307,7 +307,7 @@ const AudioDebug = (() => {
   const el = document.createElement("div");
   el.style.cssText = [
     "position:fixed",
-    "top:0",
+    "top:calc(env(safe-area-inset-top, 0px) + 28px)", // clear of Safari/in-app-browser chrome at the very top
     "left:0",
     "right:0",
     "z-index:999999",
@@ -347,23 +347,6 @@ const AudioDebug = (() => {
     log("localStorage read failed: " + e.message);
   }
   log("viewport: innerW=" + window.innerWidth + " innerH=" + window.innerHeight + " dpr=" + window.devicePixelRatio);
-
-  // The on-screen panel above is positioned at the very top of the page —
-  // if the browser/app chrome (Discord's in-app browser bar, Safari's own
-  // address bar, etc.) overlaps that region, native UI always renders
-  // above web content no matter what z-index says, so the panel could be
-  // sitting there completely hidden. alert() is an OS-level native modal
-  // that always renders in front of everything, chrome included, and
-  // blocks until dismissed — guaranteed visible if it fires at all. Fires
-  // once, a few seconds after the first gesture, giving fetch/decode/
-  // resume time to finish and get logged first.
-  let dumped = false;
-  function dump() {
-    if (dumped) return;
-    dumped = true;
-    setTimeout(() => alert("MUNCH MAN AUDIO DEBUG:\n\n" + lines.join("\n")), 2500);
-  }
-  ["pointerdown", "keydown", "touchstart"].forEach((evt) => window.addEventListener(evt, dump, { once: true }));
 
   return { log };
 })();
