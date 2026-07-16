@@ -294,6 +294,63 @@ function drawScanlineTexture(gfx, key) {
   gfx.generateTexture(key, 4, 4);
 }
 
+// --- TEMPORARY on-screen audio diagnostics --------------------------------
+// Several fix attempts (start-before-resume ordering, iOS media-session
+// category) haven't resolved silence reported on one specific iPhone, and
+// there's no way to see that device's console remotely. This always-
+// visible on-screen HUD surfaces the real pipeline state (fetch/decode
+// results, resume() outcomes, the iOS unlock video's play() result, any
+// uncaught JS error) directly on the phone's own screen — no DevTools or
+// computer needed, just read it off and report back what it says. Remove
+// once the actual root cause on that device is confirmed and fixed.
+const AudioDebug = (() => {
+  const el = document.createElement("div");
+  el.style.cssText = [
+    "position:fixed",
+    "top:0",
+    "left:0",
+    "right:0",
+    "z-index:999999",
+    "background:rgba(0,0,0,0.88)",
+    "color:#2dffb0",
+    "font:10px/1.35 monospace",
+    "padding:4px 6px",
+    "white-space:pre-wrap",
+    "pointer-events:none",
+    "max-height:42vh",
+    "overflow:hidden",
+  ].join(";");
+  document.body.appendChild(el);
+  const lines = [];
+  function log(msg) {
+    const t = new Date().toISOString().slice(11, 19);
+    lines.push("[" + t + "] " + msg);
+    if (lines.length > 16) lines.shift();
+    el.textContent = lines.join("\n");
+  }
+  window.addEventListener("error", (e) => log("JS ERROR: " + e.message));
+  window.addEventListener("unhandledrejection", (e) =>
+    log("UNHANDLED REJECTION: " + (e.reason && e.reason.message ? e.reason.message : e.reason))
+  );
+
+  // Also report the adjustable controller box's saved layout — it's a
+  // separate report (control pad "got bigger" on one iPhone) that showed
+  // up alongside the audio one. The box is player-adjustable and its
+  // {x,y,w,h} persists in localStorage per device (see WizController's
+  // storageKey option), so if it was ever dragged/resized on that phone —
+  // even by accident — it stays that size on every future visit until
+  // that storage key is cleared. Logging what's actually saved there
+  // settles whether that's what's happening instead of guessing.
+  try {
+    log("saved layout: " + (localStorage.getItem("wizarcade-munch-man-layout") || "(none saved — using defaults)"));
+  } catch (e) {
+    log("localStorage read failed: " + e.message);
+  }
+  log("viewport: innerW=" + window.innerWidth + " innerH=" + window.innerHeight + " dpr=" + window.devicePixelRatio);
+
+  return { log };
+})();
+
 // --- Audio ---------------------------------------------------------------
 // One shared AudioContext + master gain for everything: the two licensed
 // clips (fetched/decoded once, up front) and the procedurally synthesized
@@ -317,7 +374,16 @@ function drawScanlineTexture(gfx, key) {
 // settle first, so by the time .start() is called the context is
 // guaranteed to already be live, on every platform.
 const AudioSys = (() => {
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let ctx;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    AudioDebug.log("ctx created, state=" + ctx.state + ", sampleRate=" + ctx.sampleRate);
+  } catch (e) {
+    AudioDebug.log("ctx CREATE FAILED: " + e.message);
+    throw e;
+  }
+  setInterval(() => AudioDebug.log("ctx.state poll: " + ctx.state), 2000);
+
   const master = ctx.createGain();
   master.gain.value = 0.6;
   master.connect(ctx.destination);
@@ -326,7 +392,14 @@ const AudioSys = (() => {
     if (ctx.state === "running") {
       cb();
     } else {
-      ctx.resume().then(cb).catch(() => {});
+      AudioDebug.log("resume() called (state=" + ctx.state + ")");
+      ctx
+        .resume()
+        .then(() => {
+          AudioDebug.log("resume() resolved, state=" + ctx.state);
+          cb();
+        })
+        .catch((e) => AudioDebug.log("resume() REJECTED: " + e.message));
     }
   }
 
@@ -344,21 +417,37 @@ const AudioSys = (() => {
   function unlockIOSMediaSession() {
     if (iosUnlockDone) return; // pointerdown + touchstart both fire for one tap — only need this once, ever
     iosUnlockDone = true;
+    AudioDebug.log("unlockIOSMediaSession() starting");
     const video = document.createElement("video");
     video.setAttribute("playsinline", "");
     video.muted = false;
     video.src = "../../assets/silent-audio-unlock.mp4";
     video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
     document.body.appendChild(video);
-    video.play().catch(() => {}); // best-effort — harmless if this fails, just leaves the ambient-category default in place
-    video.addEventListener("ended", () => video.remove(), { once: true });
+    video
+      .play()
+      .then(() => AudioDebug.log("unlock video: play() succeeded"))
+      .catch((e) => AudioDebug.log("unlock video: play() FAILED: " + e.name + ": " + e.message));
+    video.addEventListener("error", () => {
+      const err = video.error;
+      AudioDebug.log("unlock video: element ERROR code=" + (err && err.code) + " msg=" + (err && err.message));
+    });
+    video.addEventListener(
+      "ended",
+      () => {
+        AudioDebug.log("unlock video: ended normally");
+        video.remove();
+      },
+      { once: true }
+    );
   }
 
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
     window.addEventListener(
       evt,
       () => {
-        ensureRunning(() => {});
+        AudioDebug.log("gesture: " + evt);
+        ensureRunning(() => AudioDebug.log("ensureRunning cb fired (from " + evt + ")"));
         unlockIOSMediaSession();
       },
       { once: true }
@@ -368,13 +457,20 @@ const AudioSys = (() => {
   const buffers = {};
   function loadClip(name, url) {
     fetch(url)
-      .then((r) => r.arrayBuffer())
-      .then((data) => ctx.decodeAudioData(data))
+      .then((r) => {
+        AudioDebug.log(name + " fetch: HTTP " + r.status + ", ok=" + r.ok);
+        return r.arrayBuffer();
+      })
+      .then((data) => {
+        AudioDebug.log(name + " arrayBuffer: " + data.byteLength + " bytes");
+        return ctx.decodeAudioData(data);
+      })
       .then((buf) => {
+        AudioDebug.log(name + " decodeAudioData OK: duration=" + buf.duration.toFixed(2) + "s");
         buffers[name] = buf;
         if (name === "music" && musicWanted) ensureRunning(tryStartMusic);
       })
-      .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
+      .catch((e) => AudioDebug.log(name + " FAILED: " + e.name + ": " + e.message));
   }
   loadClip("music", "../../assets/munch-man-music.mp3");
   loadClip("gameOver", "../../assets/munch-man-game-over.mp3");
@@ -382,12 +478,18 @@ const AudioSys = (() => {
   let musicSource = null;
   let musicWanted = false;
   function tryStartMusic() {
-    if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") return;
+    if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") {
+      AudioDebug.log(
+        "tryStartMusic() no-op: wanted=" + musicWanted + " alreadyStarted=" + !!musicSource + " haveBuffer=" + !!buffers.music + " ctxState=" + ctx.state
+      );
+      return;
+    }
     musicSource = ctx.createBufferSource();
     musicSource.buffer = buffers.music;
     musicSource.loop = true;
     musicSource.connect(master);
     musicSource.start(0);
+    AudioDebug.log("music STARTED (ctx.state=" + ctx.state + ", destination channels=" + ctx.destination.channelCount + ")");
   }
   function playMusic() {
     musicWanted = true;
@@ -580,6 +682,15 @@ class MainScene extends Phaser.Scene {
       maxHeight: 300,
       deadzone: 0.35,
       joystickRadius: 65,
+    });
+
+    requestAnimationFrame(() => {
+      const rect = this.controller.element.getBoundingClientRect();
+      const frame = document.getElementById("page-frame");
+      AudioDebug.log(
+        "controller box: w=" + Math.round(rect.width) + " h=" + Math.round(rect.height) + " --wiz-ctrl-height=" + getComputedStyle(frame).getPropertyValue("--wiz-ctrl-height")
+      );
+      AudioDebug.log("page-frame: w=" + Math.round(frame.getBoundingClientRect().width) + " h=" + Math.round(frame.getBoundingClientRect().height));
     });
 
     const dirVectors = {
