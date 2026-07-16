@@ -296,28 +296,39 @@ function drawScanlineTexture(gfx, key) {
 // One shared AudioContext + master gain for everything: the two licensed
 // clips (fetched/decoded once, up front) and the procedurally synthesized
 // SFX below. Autoplay policy: browsers start a fresh AudioContext
-// "suspended" until a real user gesture — rather than trying to force
-// audible sound before that (which browsers block anyway), the context is
-// resumed on the page's first pointerdown/keydown/touchstart, whatever
-// that turns out to be (the controller's own first touch, a keyboard
-// press, anything). playMusic() can be — and is — called from create()
-// before the gesture ever happens; it just stays silent (buffered/
-// scheduled, not dropped) until the context resumes, then plays from the
-// start, so the timing works out the same either way.
+// "suspended" until a real user gesture — the context is resumed on the
+// page's first pointerdown/keydown/touchstart, whatever that turns out to
+// be (the controller's own first touch, a keyboard press, anything).
+//
+// Every node in this file waits for ctx.state === "running" before its
+// start()/stop() gets called — see ensureRunning() below. That's not
+// optional polish: iOS Safari has a well-known WebKit quirk where a
+// source node .start()ed WHILE the context is still "suspended" (e.g.
+// scheduled the instant a clip finishes decoding, before the player's
+// first tap has resumed the context) silently never produces sound even
+// once the context later resumes — playback simply doesn't "wake up".
+// Desktop Chrome/Edge and Android Chrome both tolerate that ordering
+// fine, which is exactly why this bug can ship invisibly: it only shows
+// up on an iPhone. Routing every start() through ensureRunning() means
+// nothing is ever scheduled ahead of the resume — it either runs
+// immediately (already running) or waits for resume()'s own promise to
+// settle first, so by the time .start() is called the context is
+// guaranteed to already be live, on every platform.
 const AudioSys = (() => {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   const master = ctx.createGain();
   master.gain.value = 0.6;
   master.connect(ctx.destination);
 
+  function ensureRunning(cb) {
+    if (ctx.state === "running") {
+      cb();
+    } else {
+      ctx.resume().then(cb).catch(() => {});
+    }
+  }
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
-    window.addEventListener(
-      evt,
-      () => {
-        if (ctx.state === "suspended") ctx.resume();
-      },
-      { once: true }
-    )
+    window.addEventListener(evt, () => ensureRunning(() => {}), { once: true })
   );
 
   const buffers = {};
@@ -327,7 +338,7 @@ const AudioSys = (() => {
       .then((data) => ctx.decodeAudioData(data))
       .then((buf) => {
         buffers[name] = buf;
-        if (name === "music") tryStartMusic();
+        if (name === "music" && musicWanted) ensureRunning(tryStartMusic);
       })
       .catch(() => {}); // audio is a nice-to-have; a failed fetch/decode shouldn't break the game
   }
@@ -337,7 +348,7 @@ const AudioSys = (() => {
   let musicSource = null;
   let musicWanted = false;
   function tryStartMusic() {
-    if (!musicWanted || musicSource || !buffers.music) return;
+    if (!musicWanted || musicSource || !buffers.music || ctx.state !== "running") return;
     musicSource = ctx.createBufferSource();
     musicSource.buffer = buffers.music;
     musicSource.loop = true;
@@ -346,7 +357,7 @@ const AudioSys = (() => {
   }
   function playMusic() {
     musicWanted = true;
-    tryStartMusic(); // no-op until the music clip has finished decoding — see loadClip's callback above
+    ensureRunning(tryStartMusic); // no-op until BOTH the context is running AND the clip has decoded
   }
   function stopMusic() {
     musicWanted = false;
@@ -361,28 +372,36 @@ const AudioSys = (() => {
   }
   function playGameOver() {
     if (!buffers.gameOver) return;
-    const src = ctx.createBufferSource();
-    src.buffer = buffers.gameOver;
-    src.connect(master);
-    src.start(0);
+    ensureRunning(() => {
+      const src = ctx.createBufferSource();
+      src.buffer = buffers.gameOver;
+      src.connect(master);
+      src.start(0);
+    });
   }
 
   // Short oscillator blip with a quick linear attack + exponential decay —
   // the classic retro-beep envelope. whenOffset lets a caller schedule a
-  // few of these back to back for a simple multi-note "chime".
+  // few of these back to back for a simple multi-note "chime". Gameplay
+  // SFX all run through ensureRunning() too — normally a no-op by the time
+  // these fire (the player has already interacted to be eating pellets at
+  // all), but it's what keeps a pellet eaten in the same instant as the
+  // very first tap from landing back in the suspended-start trap above.
   function tone(freq, dur, type, peakGain, whenOffset) {
-    const t0 = ctx.currentTime + (whenOffset || 0);
-    const osc = ctx.createOscillator();
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, t0);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(peakGain, t0 + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-    osc.connect(g);
-    g.connect(master);
-    osc.start(t0);
-    osc.stop(t0 + dur + 0.02);
+    ensureRunning(() => {
+      const t0 = ctx.currentTime + (whenOffset || 0);
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t0);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(peakGain, t0 + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+    });
   }
 
   // Classic "waka-waka" — alternates two pitches call to call so a run of
