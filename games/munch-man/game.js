@@ -325,7 +325,7 @@ const AudioDebug = (() => {
   function log(msg) {
     const t = new Date().toISOString().slice(11, 19);
     lines.push("[" + t + "] " + msg);
-    if (lines.length > 16) lines.shift();
+    if (lines.length > 50) lines.shift();
     el.textContent = lines.join("\n");
   }
   window.addEventListener("error", (e) => log("JS ERROR: " + e.message));
@@ -347,6 +347,23 @@ const AudioDebug = (() => {
     log("localStorage read failed: " + e.message);
   }
   log("viewport: innerW=" + window.innerWidth + " innerH=" + window.innerHeight + " dpr=" + window.devicePixelRatio);
+
+  // The on-screen panel above is positioned at the very top of the page —
+  // if the browser/app chrome (Discord's in-app browser bar, Safari's own
+  // address bar, etc.) overlaps that region, native UI always renders
+  // above web content no matter what z-index says, so the panel could be
+  // sitting there completely hidden. alert() is an OS-level native modal
+  // that always renders in front of everything, chrome included, and
+  // blocks until dismissed — guaranteed visible if it fires at all. Fires
+  // once, a few seconds after the first gesture, giving fetch/decode/
+  // resume time to finish and get logged first.
+  let dumped = false;
+  function dump() {
+    if (dumped) return;
+    dumped = true;
+    setTimeout(() => alert("MUNCH MAN AUDIO DEBUG:\n\n" + lines.join("\n")), 2500);
+  }
+  ["pointerdown", "keydown", "touchstart"].forEach((evt) => window.addEventListener(evt, dump, { once: true }));
 
   return { log };
 })();
@@ -374,14 +391,32 @@ const AudioDebug = (() => {
 // settle first, so by the time .start() is called the context is
 // guaranteed to already be live, on every platform.
 const AudioSys = (() => {
-  let ctx;
+  // If anything below throws (e.g. no AudioContext constructor at all in
+  // this environment), fall back to a fully inert no-op API instead of
+  // letting the exception escape this IIFE — an uncaught throw here would
+  // abort the rest of game.js entirely (including Phaser/MainScene, which
+  // are defined further down this same file), turning "no sound" into "no
+  // game at all". Sound is a nice-to-have; it must never be able to take
+  // the game down with it.
   try {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    AudioDebug.log("ctx created, state=" + ctx.state + ", sampleRate=" + ctx.sampleRate);
+    return buildAudioSys();
   } catch (e) {
-    AudioDebug.log("ctx CREATE FAILED: " + e.message);
-    throw e;
+    AudioDebug.log("AudioSys init FAILED — audio disabled, game continues: " + e.message);
+    const noop = () => {};
+    return {
+      playMusic: noop,
+      stopMusic: noop,
+      playGameOver: noop,
+      playPellet: noop,
+      playPowerPellet: noop,
+      playGhostEaten: noop,
+      playRoundClear: noop,
+    };
   }
+
+  function buildAudioSys() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  AudioDebug.log("ctx created, state=" + ctx.state + ", sampleRate=" + ctx.sampleRate);
   setInterval(() => AudioDebug.log("ctx.state poll: " + ctx.state), 2000);
 
   const master = ctx.createGain();
@@ -578,6 +613,7 @@ const AudioSys = (() => {
     playGhostEaten,
     playRoundClear,
   };
+  } // end buildAudioSys()
 })();
 
 // --- Shared tile-stepping movement, used by both the player and ghosts.
