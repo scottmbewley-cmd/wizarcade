@@ -208,8 +208,16 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, centerX = 0, centerY = 0, FOCAL = 0;
 
+// Capped well below real device pixel ratios (phones commonly report 3) —
+// canvas cost (especially anything using shadowBlur, see draw()) scales
+// with actual pixel count, so an uncapped DPR was a big part of why this
+// felt laggy on phones/tablets. 2 is still sharp; shared by resize() and
+// draw()'s ctx.setTransform so the two can never drift out of sync.
+let DPR = 1;
+
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = DPR;
   // Prefer visualViewport over raw innerWidth/innerHeight — see the
   // iOS Safari bug-fix comment in <head>. Its address bar shows/hides
   // dynamically without firing a plain 'resize' in some cases, so this
@@ -286,11 +294,16 @@ muteBtn.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------
-// Input — 8-way digital movement, normalized diagonals, instant stop.
-// Keyboard (desktop) and the shared WizArcade WizController touch pad
-// (phones/tablets, played straight from the Discord link) both feed the
-// same padDirs-style booleans into moveInput() below, so either source
-// (or both at once) drives the exact same snappy, normalized movement.
+// Input — keyboard is digital/snappy (a key is either held or not, so
+// there's no finer signal to give it); the touch pad is analog/proportional
+// instead — a small push moves the reticle slowly, a full push reaches max
+// speed. Digital-only touch (full speed the instant a deadzone is crossed)
+// made fine aiming basically impossible on phones/tablets, since there was
+// no way to nudge the reticle a few pixels — every touch input snapped it
+// to full speed. Both sources are combined below, each independently
+// magnitude-capped at 1 so neither can exceed CROSSHAIR_SPEED on its own,
+// then the SUM is also capped at 1 so using both at once (e.g. testing with
+// a mouse-emulated touch pad) still can't exceed it either.
 // ---------------------------------------------------------------------
 const keys = Object.create(null);
 const MOVE_KEYS = new Set([
@@ -307,18 +320,15 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-// Touch pad direction state, driven by the shared controller's onMove
-// callback below. Mirrors `keys` in shape so moveInput() can just OR
-// the two sources together.
-const padDirs = { left: false, right: false, up: false, down: false };
+// Touch pad analog vector, driven by the shared controller's onMove
+// callback below — the joystick's raw -1..1 deflection per axis, not the
+// on/off direction flags, which is what gives it proportional control.
+const padVec = { x: 0, y: 0 };
 
 // "relative" mode (a free virtual joystick) is used instead of the other
 // games' "zone" mode because Star Battle's reticle needs true diagonals —
-// zone mode only ever reports one of 4 cardinal directions at a time. The
-// boolean flags (not the raw dx/dy) are read here, deliberately, so a
-// touch push behaves exactly like a held key: fixed snappy speed the
-// instant the deadzone is crossed, not proportional to how far the thumb
-// drags.
+// zone mode only ever reports one of 4 cardinal directions at a time, no
+// diagonal combinations possible.
 const controller = new WizController({
   target: document.body,
   mode: 'relative',
@@ -336,19 +346,22 @@ const controller = new WizController({
   maxHeight: 300,
 });
 controller.onMove((data) => {
-  padDirs.left = data.active && data.left;
-  padDirs.right = data.active && data.right;
-  padDirs.up = data.active && data.up;
-  padDirs.down = data.active && data.down;
+  padVec.x = data.active && data.dx != null ? data.dx : 0;
+  padVec.y = data.active && data.dy != null ? data.dy : 0;
 });
 
 function moveInput() {
-  let x = 0, y = 0;
-  if (keys.ArrowLeft || keys.KeyA || padDirs.left) x -= 1;
-  if (keys.ArrowRight || keys.KeyD || padDirs.right) x += 1;
-  if (keys.ArrowUp || keys.KeyW || padDirs.up) y -= 1;
-  if (keys.ArrowDown || keys.KeyS || padDirs.down) y += 1;
-  if (x !== 0 && y !== 0) { const inv = 1 / Math.SQRT2; x *= inv; y *= inv; }
+  let kx = 0, ky = 0;
+  if (keys.ArrowLeft || keys.KeyA) kx -= 1;
+  if (keys.ArrowRight || keys.KeyD) kx += 1;
+  if (keys.ArrowUp || keys.KeyW) ky -= 1;
+  if (keys.ArrowDown || keys.KeyS) ky += 1;
+  if (kx !== 0 && ky !== 0) { const inv = 1 / Math.SQRT2; kx *= inv; ky *= inv; }
+
+  let x = kx + padVec.x;
+  let y = ky + padVec.y;
+  const mag = Math.hypot(x, y);
+  if (mag > 1) { x /= mag; y /= mag; }
   return { x, y };
 }
 
@@ -612,7 +625,7 @@ function update(dt, now) {
     if (s.z <= 1) {
       s.dead = true;
       damageShield(CONFIG.SHIELD_DAMAGE_ENEMY_SHOT);
-      spawnBurst(crosshair.x, crosshair.y, 8, [COLORS.red, COLORS.magenta], { speedMin: 80, speedMax: 200 });
+      spawnBurst(crosshair.x, crosshair.y, 6, [COLORS.red, COLORS.magenta], { speedMin: 80, speedMax: 200 });
     }
   }
   enemyShots = enemyShots.filter((s) => !s.dead);
@@ -669,7 +682,7 @@ function resolveBoltCollisions() {
         spawnBurst(p.x, p.y, 5, [COLORS.magenta, COLORS.blue], { speedMin: 60, speedMax: 160 });
         if (e.hp <= 0) {
           e.dead = true; score += CONFIG.SCORE_ENEMY;
-          spawnBurst(p.x, p.y, 20, PALETTE, { speedMin: 100, speedMax: 320, lenMin: 8, lenMax: 26 });
+          spawnBurst(p.x, p.y, 12, PALETTE, { speedMin: 100, speedMax: 320, lenMin: 8, lenMax: 26, lifeMax: 0.4 });
         }
         break;
       }
@@ -682,7 +695,7 @@ function resolveBoltCollisions() {
       const rad = CONFIG.ROCK_RADIUS * 1.15 * p.scale;
       if (dist2(b.x, b.y, p.x, p.y) < rad * rad) {
         b.dead = true; r2.dead = true; score += CONFIG.SCORE_ROCK;
-        spawnBurst(p.x, p.y, 12, [COLORS.blue, COLORS.white], { speedMin: 80, speedMax: 220 });
+        spawnBurst(p.x, p.y, 8, [COLORS.blue, COLORS.white], { speedMin: 80, speedMax: 220 });
         break;
       }
     }
@@ -694,7 +707,7 @@ function resolveBoltCollisions() {
       const hitRad = enemyShotSize(s.z) + 6;
       if (dist2(b.x, b.y, p.x, p.y) < hitRad * hitRad) {
         b.dead = true; s.dead = true; score += CONFIG.SCORE_ENEMY_SHOT_DOWN;
-        spawnBurst(p.x, p.y, 8, [COLORS.green, COLORS.blue], { speedMin: 60, speedMax: 160 });
+        spawnBurst(p.x, p.y, 6, [COLORS.green, COLORS.blue], { speedMin: 60, speedMax: 160 });
         break;
       }
     }
@@ -709,10 +722,10 @@ function resolveBoltCollisions() {
         const targetable = boss.z <= CONFIG.BOSS_TARGETABLE_Z;
         if (targetable && dist2(b.x, b.y, wp.x, wp.y) < wRad * wRad) {
           b.dead = true; boss.hp--; score += CONFIG.SCORE_BOSS_HIT;
-          spawnBurst(wp.x, wp.y, 22, PALETTE, { speedMin: 120, speedMax: 340, lenMin: 10, lenMax: 30 });
+          spawnBurst(wp.x, wp.y, 14, PALETTE, { speedMin: 120, speedMax: 340, lenMin: 10, lenMax: 30, lifeMax: 0.4 });
           if (boss.hp <= 0) {
             bossKilled = true; score += CONFIG.SCORE_BOSS_KILL_BONUS;
-            spawnBurst(bp.x, bp.y, 60, PALETTE, { speedMin: 150, speedMax: 480, lenMin: 14, lenMax: 46, lifeMax: 0.9 });
+            spawnBurst(bp.x, bp.y, 32, PALETTE, { speedMin: 150, speedMax: 480, lenMin: 14, lenMax: 46, lifeMax: 0.6 });
           }
         } else {
           b.dead = true;
@@ -762,7 +775,7 @@ function drawFighter(e) {
   ctx.scale(size, size);
   const color = e.hp < CONFIG.ENEMY_HP ? COLORS.red : COLORS.magenta;
   ctx.lineWidth = 1.6 / size;
-  ctx.shadowBlur = 8;
+  ctx.shadowBlur = 4;
   ctx.shadowColor = color; ctx.strokeStyle = color;
   ctx.beginPath();
   for (const [[x1, y1], [x2, y2]] of FIGHTER_STRUTS) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
@@ -779,7 +792,7 @@ function drawRock(r) {
   ctx.rotate(r.spin);
   ctx.scale(size, size);
   ctx.lineWidth = 1.4 / size;
-  ctx.shadowBlur = 6; ctx.shadowColor = COLORS.blue; ctx.strokeStyle = COLORS.blue;
+  ctx.shadowBlur = 3; ctx.shadowColor = COLORS.blue; ctx.strokeStyle = COLORS.blue;
   ctx.beginPath();
   r.shape.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.closePath();
@@ -794,7 +807,7 @@ function drawEnemyShot(s) {
   const size = enemyShotSize(s.z);
   ctx.save();
   ctx.translate(p.x, p.y);
-  ctx.lineWidth = 1.5; ctx.shadowBlur = 10; ctx.shadowColor = COLORS.red; ctx.strokeStyle = COLORS.red;
+  ctx.lineWidth = 1.5; ctx.shadowBlur = 5; ctx.shadowColor = COLORS.red; ctx.strokeStyle = COLORS.red;
   ctx.beginPath();
   ctx.moveTo(-size, 0); ctx.lineTo(size, 0);
   ctx.moveTo(0, -size); ctx.lineTo(0, size);
@@ -810,13 +823,18 @@ function drawBoss(b) {
   ctx.translate(p.x, p.y);
   ctx.scale(size, size);
   ctx.lineWidth = 1.4 / size;
-  ctx.shadowBlur = 10; ctx.shadowColor = COLORS.green; ctx.strokeStyle = COLORS.green;
+  // No shadowBlur on the hull: this shape can render several thousand
+  // pixels wide once the boss closes in, and shadowBlur's cost scales
+  // with the on-screen pixel AREA being blurred, not the blur radius —
+  // at that size it was the single biggest cause of frame drops. A
+  // saturated stroke color alone still reads as "neon" against black.
+  ctx.shadowBlur = 0; ctx.strokeStyle = COLORS.green;
 
   // Main tapered dreadnought hull (wedge silhouette).
   strokePoly([
     [-1, -0.12], [-0.55, -0.3], [0.4, -0.3], [1, -0.05],
     [1, 0.05], [0.4, 0.3], [-0.55, 0.3], [-1, 0.12],
-  ].map(([x, y]) => [x, y]), true, COLORS.green, 1.4 / size, 10);
+  ].map(([x, y]) => [x, y]), true, COLORS.green, 1.4 / size, 0);
 
   // Command dome
   ctx.beginPath();
@@ -829,11 +847,13 @@ function drawBoss(b) {
     [[-0.15, -0.3], [-0.15, 0.3]], [[0.2, -0.28], [0.2, 0.28]],
     [[0.55, -0.16], [0.55, 0.16]],
   ];
-  strokeSegments(greebles.map((s2) => s2.map(([x, y]) => [x, y])), COLORS.green, 1 / size, 6);
+  strokeSegments(greebles.map((s2) => s2.map(([x, y]) => [x, y])), COLORS.green, 1 / size, 0);
 
   ctx.restore();
 
   // Weak point — pulsing, drifting, drawn in world space at its own scale.
+  // Small footprint even at max boss size (~1/9th the hull), so a little
+  // glow here stays cheap and helps it pop as the thing you're aiming for.
   const wp = project(b.x + b.wx, b.y + b.wy, b.z);
   const targetable = b.z <= CONFIG.BOSS_TARGETABLE_Z;
   const pulse = 0.55 + Math.sin(b.pulsePhase) * 0.45;
@@ -842,7 +862,7 @@ function drawBoss(b) {
   ctx.save();
   ctx.translate(wp.x, wp.y);
   ctx.globalAlpha = targetable ? 1 : 0.4;
-  ctx.strokeStyle = wColor; ctx.shadowColor = wColor; ctx.shadowBlur = 14 * pulse;
+  ctx.strokeStyle = wColor; ctx.shadowColor = wColor; ctx.shadowBlur = 6 * pulse;
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(0, 0, wSize * pulse, 0, Math.PI * 2); ctx.stroke();
   ctx.beginPath(); ctx.arc(0, 0, wSize * 0.4, 0, Math.PI * 2); ctx.stroke();
@@ -859,7 +879,7 @@ function drawCrosshair(x, y) {
   const t = performance.now() / 500;
   ctx.save();
   ctx.translate(x, y);
-  ctx.strokeStyle = COLORS.green; ctx.shadowColor = COLORS.green; ctx.shadowBlur = 10; ctx.lineWidth = 1.6;
+  ctx.strokeStyle = COLORS.green; ctx.shadowColor = COLORS.green; ctx.shadowBlur = 6; ctx.lineWidth = 1.6;
 
   ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 2); ctx.stroke();
   ctx.beginPath(); ctx.arc(0, 0, 14 + Math.sin(t) * 2, 0, Math.PI * 2); ctx.stroke();
@@ -885,7 +905,9 @@ function drawCrosshair(x, y) {
 }
 
 function drawCockpitFrame() {
-  ctx.strokeStyle = '#1c6b48'; ctx.shadowBlur = 4; ctx.shadowColor = '#1c6b48'; ctx.lineWidth = 2;
+  // No shadowBlur here — static geometry drawn every frame regardless of
+  // gameplay state, not worth the per-frame blur cost for a dim frame.
+  ctx.strokeStyle = '#1c6b48'; ctx.shadowBlur = 0; ctx.lineWidth = 2;
   const m = 18;
   const struts = [
     [[m, m], [m + 70, m]], [[m, m], [m, m + 70]],
@@ -899,7 +921,7 @@ function drawCockpitFrame() {
 }
 
 function draw() {
-  ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.globalCompositeOperation = 'source-over';
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#000';
@@ -925,7 +947,7 @@ function draw() {
 
     // Bolts — short glowing streaks.
     for (const b of bolts) {
-      ctx.strokeStyle = COLORS.green; ctx.shadowColor = COLORS.green; ctx.shadowBlur = 12; ctx.lineWidth = 2.4;
+      ctx.strokeStyle = COLORS.green; ctx.shadowColor = COLORS.green; ctx.shadowBlur = 6; ctx.lineWidth = 2.4;
       ctx.beginPath();
       ctx.moveTo(b.x - b.dirX * 16, b.y - b.dirY * 16);
       ctx.lineTo(b.x, b.y);
@@ -935,7 +957,7 @@ function draw() {
     // Particles
     for (const p of particles) {
       const alpha = Math.max(0, p.life / p.maxLife);
-      ctx.strokeStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+      ctx.strokeStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 3;
       ctx.globalAlpha = alpha; ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(p.x, p.y);
