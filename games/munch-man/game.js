@@ -443,20 +443,20 @@ const AudioSys = (() => {
   // normal Media volume/speaker path. assets/silent-audio-unlock.mp4 is a
   // ~2KB, 0.5s, genuinely silent clip that exists solely for this.
   //
-  // On-device testing showed sound cutting out at almost exactly the
-  // 1-second mark — right around when that 0.5s clip would have finished
-  // and stopped holding the "playback" category. LOOPS continuously now
-  // (never ends, never gets removed) so the media-category session stays
-  // held for as long as the game is open, instead of only for its first
-  // half-second.
+  // Tried making this clip loop continuously (never ending) on the theory
+  // that sound cutting out ~1s in meant the "playback" category was only
+  // held for the clip's original 0.5s duration. On-device testing showed
+  // that made things WORSE (no sound at all, vs. ~1s before) — each loop
+  // restart likely churns the shared audio session itself, plausibly
+  // re-triggering the "interrupted" state repeatedly instead of holding a
+  // clean single state. Reverted to a single play.
   let iosUnlockDone = false;
   function unlockIOSMediaSession() {
     if (iosUnlockDone) return; // pointerdown + touchstart both fire for one tap — only need this once, ever
     iosUnlockDone = true;
-    AudioDebug.log("unlockIOSMediaSession() starting (looping)");
+    AudioDebug.log("unlockIOSMediaSession() starting");
     const video = document.createElement("video");
     video.setAttribute("playsinline", "");
-    video.loop = true;
     video.muted = false;
     video.src = "../../assets/silent-audio-unlock.mp4";
     video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;";
@@ -469,6 +469,14 @@ const AudioSys = (() => {
       const err = video.error;
       AudioDebug.log("unlock video: element ERROR code=" + (err && err.code) + " msg=" + (err && err.message));
     });
+    video.addEventListener(
+      "ended",
+      () => {
+        AudioDebug.log("unlock video: ended normally");
+        video.remove();
+      },
+      { once: true }
+    );
   }
 
   ["pointerdown", "keydown", "touchstart"].forEach((evt) =>
