@@ -57,11 +57,14 @@ const CONFIG = {
   // on a global grid. So a single press still only moves a small,
   // predictable, non-twitchy amount, but a sequence of presses can settle
   // the reticle at any continuous position, not just a fixed set of 63.
-  SECTOR_COLS: 7,   // used only to derive the per-step distance below (GAME_WIDTH / this)
-  SECTOR_ROWS: 9,   // same, for the vertical step distance
+  // Finer grid than the first pass (was 7x9) — each keyboard step moves a
+  // smaller, more precise distance now, after feedback that aiming still
+  // felt imprecise.
+  SECTOR_COLS: 10,
+  SECTOR_ROWS: 13,
   SECTOR_MARGIN: 16,     // reticle can't be stepped closer to the canvas edge than this
   SECTOR_STEP_MS: 110,   // min time between steps on one axis while a direction is held — KEYBOARD only
-  SECTOR_EASE_RATE: 12,  // higher = snappier catch-up to the target (not a speed cap)
+  SECTOR_EASE_RATE: 18,  // was 12 — snappier catch-up to the target, less "floaty" lag behind input
 
   // Touch pad only — ABSOLUTE position mapping: wherever the thumb
   // currently is on the pad maps directly to a position on screen, so the
@@ -77,7 +80,7 @@ const CONFIG = {
   // fine adjustment), while still reaching the full screen range exactly
   // at full deflection. Keyboard has no pad position to map, so it keeps
   // the fixed-step system above unchanged.
-  TOUCH_GAIN_EXP: 2.0,
+  TOUCH_GAIN_EXP: 1.5, // was 2.0 — gentler curve, less oversensitive right at the pad's center
 
   BURST_SIZE: 5,           // bolts per burst (also the effective "max active" cap)
   BURST_GAP_MS: 65,        // time between bolts within a burst
@@ -92,13 +95,13 @@ const CONFIG = {
   ENEMY_SPAWN_MAX_MS: 4400,
   ENEMY_MAX_ALIVE: 2,
   ENEMY_HP: 3,
-  ENEMY_FIRE_MIN_MS: 1600,
-  ENEMY_FIRE_MAX_MS: 3400,
-  ENEMY_PROJECTILE_Z_SPEED: 7,
   ENEMY_Z_SPAWN_MIN: 26,       // far spawn distance, was a near "already in combat range" 13-17
   ENEMY_Z_SPAWN_MAX: 34,
   ENEMY_Z_APPROACH_SPEED: 1.4, // z-units/sec closed continuously while alive, not eased-in over a fraction of lifespan
   ENEMY_Z_FLOOR: 6,            // never closes nearer than this while weaving
+  // Fighters no longer fire back at all — removed per feedback that the
+  // return-fire marks were unwanted clutter. They're a scoring target
+  // only now; rocks are the only shield-damage source pre-boss.
 
   ROCK_SPAWN_MIN_MS: 3200,
   ROCK_SPAWN_MAX_MS: 5200,
@@ -113,22 +116,36 @@ const CONFIG = {
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
   BOSS_TARGETABLE_Z: 16, // weak point only does damage once boss.z closes inside this
 
+  // Hyperspace jump into the boss encounter, right when it triggers at
+  // BOSS_SPAWN_TIME: a brief warp-streak starfield transition, all
+  // remaining rocks cleared (rocks stop spawning entirely from this point
+  // on — fighters keep spawning throughout), and a large static planet
+  // appears in the background for scale/drama. Purely a visual overlay —
+  // doesn't pause gameplay underneath it.
+  HYPERSPACE_DURATION_MS: 1100,
+  PLANET_RADIUS_PX: 120,
+  PLANET_X: GAME_WIDTH * 0.72,
+  PLANET_Y: GAME_HEIGHT * 0.22,
+
   // World-space object radii — screen size/hit-radius is always radius *
   // (FOCAL / z), the same formula used for positions, so these stay in
   // the same small-unit range as the x/y spawn spreads below (not pixel
-  // values).
+  // values). The *_HIT_MULT values are how much larger than the visual
+  // radius the actual hit-test uses — made more forgiving across the
+  // board after feedback that aiming still felt imprecise.
   ROCK_RADIUS: 1.3,
+  ROCK_HIT_MULT: 1.35,
   FIGHTER_RADIUS: 1.6,
-  PROJECTILE_RADIUS: 0.5,
+  FIGHTER_HIT_MULT: 1.35,
   BOSS_RADIUS: 7,
+  BOSS_HULL_HIT_MULT: 1.15,
   BOSS_WEAKPOINT_RADIUS: 0.8,
+  BOSS_WEAKPOINT_HIT_MULT: 1.4,
 
   SHIELD_DAMAGE_ROCK: 9,
-  SHIELD_DAMAGE_ENEMY_SHOT: 7,
 
   SCORE_ENEMY: 100,
   SCORE_ROCK: 25,
-  SCORE_ENEMY_SHOT_DOWN: 15,
   SCORE_BOSS_HIT: 60,
   SCORE_BOSS_KILL_BONUS: 5000,
 
@@ -246,6 +263,19 @@ const FIGHTER_STRUTS = [
   [[0, -0.15], [0, 0.1]], [[-0.2, 0.28], [-0.2, 0.5]], [[0.2, 0.28], [0.2, 0.5]],
 ];
 
+// Second fighter design — a narrower delta/interceptor silhouette,
+// visually distinct from FIGHTER_STRUTS' broad swept-wing shape, spawned
+// 50/50 (see spawnEnemy()'s `style` field). Nose at local (-1, 0), same
+// "forward" axis convention as FIGHTER_STRUTS, so both rotate correctly
+// under the same drawFighter() angle formula.
+const FIGHTER_STRUTS_B = [
+  [[-1, 0], [0.3, -0.5]], [[0.3, -0.5], [0.15, -0.15]], [[0.15, -0.15], [0.15, 0.15]],
+  [[0.15, 0.15], [0.3, 0.5]], [[0.3, 0.5], [-1, 0]],
+  [[0.3, -0.5], [0.55, -0.65]], [[0.3, 0.5], [0.55, 0.65]],
+  [[-1, 0], [-0.4, 0]],
+  [[0.15, -0.15], [0.5, -0.15]], [[0.15, 0.15], [0.5, 0.15]],
+];
+
 const BOSS_HULL = [
   [-1, -0.12], [-0.55, -0.3], [0.4, -0.3], [1, -0.05],
   [1, 0.05], [0.4, 0.3], [-0.55, 0.3], [-1, 0.12],
@@ -340,11 +370,12 @@ class MainScene extends Phaser.Scene {
     this.enemies = [];
     this.rocks = [];
     this.bolts = [];
-    this.enemyShots = [];
     this.particles = [];
     this.boss = null;
     this.bossSpawned = false;
     this.bossKilled = false;
+    this.hyperspaceUntil = 0;
+    this.planet = null;
     this.fire = { burstIndex: 0, nextBoltTime: 0, cooldownUntil: 0, corner: 0 };
     this.nextEnemyAt = 0;
     this.nextRockAt = 0;
@@ -462,6 +493,7 @@ class MainScene extends Phaser.Scene {
       z: baseZ,
       baseZ,
       hp: CONFIG.ENEMY_HP,
+      style: Math.random() < 0.5 ? 'A' : 'B', // 50/50 mix of the two fighter designs
       phase: Math.random() * Math.PI * 2,
       freqX: 0.8 + Math.random() * 0.6,
       freqY: 1.1 + Math.random() * 0.7,
@@ -469,7 +501,6 @@ class MainScene extends Phaser.Scene {
       ampY: 1 + Math.random() * 1.2,
       age: 0,
       lifespan: 9 + Math.random() * 4,
-      fireAt: performance.now() + rand(CONFIG.ENEMY_FIRE_MIN_MS, CONFIG.ENEMY_FIRE_MAX_MS),
       lastX: 0, lastY: 0,
       angle: 0,
       dead: false,
@@ -611,13 +642,22 @@ class MainScene extends Phaser.Scene {
       this.spawnEnemy();
       this.nextEnemyAt = now + rand(CONFIG.ENEMY_SPAWN_MIN_MS, CONFIG.ENEMY_SPAWN_MAX_MS);
     }
-    if (now >= this.nextRockAt && this.rocks.length < CONFIG.ROCK_MAX_ALIVE) {
+    // Rocks stop spawning entirely once the boss phase begins (see the
+    // hyperspace-jump block below, which also clears any still in flight)
+    // — fighters keep spawning throughout, per feedback.
+    if (!this.bossSpawned && now >= this.nextRockAt && this.rocks.length < CONFIG.ROCK_MAX_ALIVE) {
       this.spawnRock();
       this.nextRockAt = now + rand(CONFIG.ROCK_SPAWN_MIN_MS, CONFIG.ROCK_SPAWN_MAX_MS);
     }
     if (!this.bossSpawned && this.runTime >= CONFIG.BOSS_SPAWN_TIME) {
       this.spawnBoss();
       this.bossSpawned = true;
+      // Hyperspace jump: brief warp-streak starfield transition (see
+      // drawStarfield()), all remaining debris left behind, and a large
+      // static planet appears in the background for scale.
+      this.hyperspaceUntil = now + CONFIG.HYPERSPACE_DURATION_MS;
+      this.rocks = [];
+      this.planet = { x: CONFIG.PLANET_X, y: CONFIG.PLANET_Y, r: CONFIG.PLANET_RADIUS_PX };
     }
 
     for (const e of this.enemies) {
@@ -643,11 +683,6 @@ class MainScene extends Phaser.Scene {
       e.angle = Math.atan2(e.y - e.lastY, e.x - e.lastX);
 
       if (e.age > e.lifespan && e.z > e.baseZ * 1.6) e.dead = true;
-
-      if (now >= e.fireAt && e.age < e.lifespan) {
-        this.enemyShots.push({ z: e.z, tx: e.x, ty: e.y, dead: false });
-        e.fireAt = now + rand(CONFIG.ENEMY_FIRE_MIN_MS, CONFIG.ENEMY_FIRE_MAX_MS);
-      }
     }
     this.enemies = this.enemies.filter((e) => !e.dead);
 
@@ -663,18 +698,6 @@ class MainScene extends Phaser.Scene {
       }
     }
     this.rocks = this.rocks.filter((r) => !r.dead);
-
-    for (const s of this.enemyShots) {
-      s.z -= CONFIG.ENEMY_PROJECTILE_Z_SPEED * dt;
-      s.tx += (0 - s.tx) * dt * 0.6;
-      s.ty += (0 - s.ty) * dt * 0.6;
-      if (s.z <= 1) {
-        s.dead = true;
-        this.damageShield(CONFIG.SHIELD_DAMAGE_ENEMY_SHOT);
-        this.spawnBurst(this.crosshair.x, this.crosshair.y, 6, [COLORS.red, COLORS.magenta], { speedMin: 80, speedMax: 200 });
-      }
-    }
-    this.enemyShots = this.enemyShots.filter((s) => !s.dead);
 
     if (this.boss && !this.bossKilled) {
       const elapsed = Math.min(this.runTime - CONFIG.BOSS_SPAWN_TIME, CONFIG.RUN_LENGTH - CONFIG.BOSS_SPAWN_TIME);
@@ -712,7 +735,7 @@ class MainScene extends Phaser.Scene {
       for (const e of this.enemies) {
         if (e.dead) continue;
         const p = project(e.x, e.y, e.z);
-        const r = CONFIG.FIGHTER_RADIUS * 1.15 * p.scale;
+        const r = CONFIG.FIGHTER_RADIUS * CONFIG.FIGHTER_HIT_MULT * p.scale;
         if (dist2(b.x, b.y, p.x, p.y) < r * r) {
           b.dead = true; e.hp--;
           this.spawnBurst(p.x, p.y, 5, [COLORS.magenta, COLORS.blue], { speedMin: 60, speedMax: 160 });
@@ -728,7 +751,7 @@ class MainScene extends Phaser.Scene {
       for (const r2 of this.rocks) {
         if (r2.dead) continue;
         const p = project(r2.x, r2.y, r2.z);
-        const rad = CONFIG.ROCK_RADIUS * 1.15 * p.scale;
+        const rad = CONFIG.ROCK_RADIUS * CONFIG.ROCK_HIT_MULT * p.scale;
         if (dist2(b.x, b.y, p.x, p.y) < rad * rad) {
           b.dead = true; r2.dead = true; this.score += CONFIG.SCORE_ROCK;
           this.spawnBurst(p.x, p.y, 8, [COLORS.blue, COLORS.white], { speedMin: 80, speedMax: 220 });
@@ -737,24 +760,12 @@ class MainScene extends Phaser.Scene {
       }
       if (b.dead) continue;
 
-      for (const s of this.enemyShots) {
-        if (s.dead) continue;
-        const p = project(s.tx, s.ty, s.z);
-        const hitRad = enemyShotSize(s.z) + 6;
-        if (dist2(b.x, b.y, p.x, p.y) < hitRad * hitRad) {
-          b.dead = true; s.dead = true; this.score += CONFIG.SCORE_ENEMY_SHOT_DOWN;
-          this.spawnBurst(p.x, p.y, 6, [COLORS.green, COLORS.blue], { speedMin: 60, speedMax: 160 });
-          break;
-        }
-      }
-      if (b.dead) continue;
-
       if (this.boss && !this.bossKilled) {
         const bp = project(this.boss.x, this.boss.y, this.boss.z);
-        const hullRad = CONFIG.BOSS_RADIUS * 1.1 * bp.scale;
+        const hullRad = CONFIG.BOSS_RADIUS * CONFIG.BOSS_HULL_HIT_MULT * bp.scale;
         if (dist2(b.x, b.y, bp.x, bp.y) < hullRad * hullRad) {
           const wp = project(this.boss.x + this.boss.wx, this.boss.y + this.boss.wy, this.boss.z);
-          const wRad = Math.max(10, CONFIG.BOSS_WEAKPOINT_RADIUS * 1.25 * bp.scale);
+          const wRad = Math.max(10, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
           const targetable = this.boss.z <= CONFIG.BOSS_TARGETABLE_Z;
           if (targetable && dist2(b.x, b.y, wp.x, wp.y) < wRad * wRad) {
             b.dead = true; this.boss.hp--; this.score += CONFIG.SCORE_BOSS_HIT;
@@ -782,10 +793,10 @@ class MainScene extends Phaser.Scene {
     this.drawStarfield();
 
     if (this.state === 'playing') {
+      if (this.planet) this.drawPlanet(this.planet);
       this.rocks.forEach((r) => this.drawRock(r));
       if (this.boss && !this.bossKilled) this.drawBoss(this.boss);
       this.enemies.forEach((e) => this.drawFighter(e));
-      this.enemyShots.forEach((s) => this.drawEnemyShot(s));
       this.drawBolts();
       this.drawParticles();
       this.drawCockpitFrame();
@@ -794,15 +805,56 @@ class MainScene extends Phaser.Scene {
   }
 
   drawStarfield() {
+    const now = performance.now();
+    const inHyperspace = now < this.hyperspaceUntil;
+    // Warp-streak effect: stars stretch into long radiating lines instead
+    // of dots for the ~1s hyperspace-jump window (see the boss-trigger
+    // block in stepGameplay()), stretch amount easing out over that
+    // window — the classic "jump to hyperspace" beat, purely cosmetic,
+    // doesn't touch game state.
+    const streak = inHyperspace ? 1 - (this.hyperspaceUntil - now) / CONFIG.HYPERSPACE_DURATION_MS : 0;
+
     this.gWhite.fillStyle(COLORS.white, 1);
     for (const s of this.stars) {
       const p = project(s.x, s.y, s.z);
       if (p.x < 0 || p.x > GAME_WIDTH || p.y < 0 || p.y > GAME_HEIGHT) continue;
       const r = Math.max(0.4, CONFIG.STAR_RADIUS * p.scale);
-      const alpha = 0.4 + 0.6 * Math.abs(Math.sin(s.twinkle));
-      this.gWhite.fillStyle(COLORS.white, alpha);
-      this.gWhite.fillCircle(p.x, p.y, r);
+      if (inHyperspace) {
+        const dx = p.x - centerX, dy = p.y - centerY;
+        const len = (8 + r * 30) * streak;
+        const d = Math.max(0.001, Math.hypot(dx, dy));
+        this.gWhite.lineStyle(Math.max(0.6, r * 0.6), COLORS.white, 0.5 + 0.5 * streak);
+        this.gWhite.beginPath();
+        this.gWhite.moveTo(p.x, p.y);
+        this.gWhite.lineTo(p.x + (dx / d) * len, p.y + (dy / d) * len);
+        this.gWhite.strokePath();
+      } else {
+        const alpha = 0.4 + 0.6 * Math.abs(Math.sin(s.twinkle));
+        this.gWhite.fillStyle(COLORS.white, alpha);
+        this.gWhite.fillCircle(p.x, p.y, r);
+      }
     }
+  }
+
+  // Large, static background world — appears once the boss phase begins
+  // (see the hyperspace-jump block in stepGameplay()) for scale/drama.
+  // Deliberately NOT perspective-projected like everything else: it's
+  // meant to read as a fixed, distant backdrop, not something that's
+  // "approaching."
+  drawPlanet(planet) {
+    this.gBlue.lineStyle(1.6, COLORS.blue, 0.8);
+    this.gBlue.strokeCircle(planet.x, planet.y, planet.r);
+    // A few surface-band arcs for texture (drawn as short horizontal
+    // chords at different heights within the disc, not full ellipses, so
+    // they read as latitude bands rather than a ringed/Saturn look).
+    [-0.5, -0.15, 0.2, 0.55].forEach((f) => {
+      const y = planet.y + planet.r * f;
+      const halfW = Math.sqrt(Math.max(0, planet.r * planet.r - (planet.r * f) * (planet.r * f)));
+      this.gBlue.beginPath();
+      this.gBlue.moveTo(planet.x - halfW, y);
+      this.gBlue.lineTo(planet.x + halfW, y);
+      this.gBlue.strokePath();
+    });
   }
 
   drawFighter(e) {
@@ -812,8 +864,9 @@ class MainScene extends Phaser.Scene {
     const angle = Math.PI / 2 + e.angle * 0.4;
     const g = e.hp < CONFIG.ENEMY_HP ? this.gRed : this.gMagenta;
     const color = e.hp < CONFIG.ENEMY_HP ? COLORS.red : COLORS.magenta;
+    const struts = e.style === 'B' ? FIGHTER_STRUTS_B : FIGHTER_STRUTS;
     g.lineStyle(1.6, color, 1);
-    for (const [[x1, y1], [x2, y2]] of FIGHTER_STRUTS) {
+    for (const [[x1, y1], [x2, y2]] of struts) {
       const [ax, ay] = xf(x1, y1, p.x, p.y, size, angle);
       const [bx, by] = xf(x2, y2, p.x, p.y, size, angle);
       g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.strokePath();
@@ -832,16 +885,6 @@ class MainScene extends Phaser.Scene {
     });
     this.gBlue.closePath();
     this.gBlue.strokePath();
-  }
-
-  drawEnemyShot(s) {
-    const p = project(s.tx, s.ty, s.z);
-    const size = enemyShotSize(s.z);
-    this.gRed.lineStyle(1.5, COLORS.red, 1);
-    this.gRed.beginPath();
-    this.gRed.moveTo(p.x - size, p.y); this.gRed.lineTo(p.x + size, p.y);
-    this.gRed.moveTo(p.x, p.y - size); this.gRed.lineTo(p.x, p.y + size);
-    this.gRed.strokePath();
   }
 
   drawBoss(b) {
@@ -979,8 +1022,9 @@ class MainScene extends Phaser.Scene {
     this.targetX = centerX; this.targetY = centerY;
     this.stepAtX = 0; this.stepAtY = 0;
     this.crosshair = { x: centerX, y: centerY };
-    this.enemies = []; this.rocks = []; this.bolts = []; this.enemyShots = []; this.particles = [];
+    this.enemies = []; this.rocks = []; this.bolts = []; this.particles = [];
     this.boss = null; this.bossSpawned = false; this.bossKilled = false;
+    this.hyperspaceUntil = 0; this.planet = null;
     this.fire = { burstIndex: 0, nextBoltTime: 0, cooldownUntil: 0, corner: 0 };
     const now = performance.now();
     this.nextEnemyAt = now + rand(CONFIG.ENEMY_SPAWN_MIN_MS, CONFIG.ENEMY_SPAWN_MAX_MS);
@@ -1011,8 +1055,6 @@ class MainScene extends Phaser.Scene {
     this.endScreen.classList.remove('hidden');
   }
 }
-
-function enemyShotSize(z) { return Math.max(3, CONFIG.PROJECTILE_RADIUS * FOCAL / Math.max(z, 0.5)); }
 
 const config = {
   type: Phaser.AUTO,
