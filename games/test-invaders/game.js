@@ -680,6 +680,16 @@ class MainScene extends Phaser.Scene {
     // waiting for another "first touch."
     this.musicWantsPlay = audioGestureReceived;
 
+    // Broadest possible unlock trigger, on top of the steering-zone/retry
+    // hooks below: any first click/tap anywhere, or any first keypress.
+    // Needed because this game (unlike the others) has no tap-to-start
+    // screen, and a PC player can play entirely via arrow keys/WASD
+    // without ever touching the on-screen steering zone — which otherwise
+    // left audio locked/silent for the whole run despite everything else
+    // working fine.
+    this.input.once("pointerdown", () => this.handleFirstInteraction());
+    this.input.keyboard.once("keydown", () => this.handleFirstInteraction());
+
     // Player — guard mirrors createController()'s own duplicate-guard
     // further down in this method: belt-and-suspenders insurance that a
     // stray leftover reference (e.g. from a scene restart) can never leave
