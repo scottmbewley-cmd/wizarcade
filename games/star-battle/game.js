@@ -88,13 +88,14 @@ const CONFIG = {
   BOLT_SPEED: 900,         // px/sec
 
   // "Phase 2" weapon — every bolt fired from the moment the hyperspace
-  // jump ends onward is visually and audibly distinct (blue, bigger,
-  // deeper-pitched) from the green weapon used before it, per feedback.
-  // Same underlying laser sfx file, just played at a different
-  // playbackRate — there's no separate audio asset for this.
-  PHASE2_BOLT_WIDTH: 3.6,   // was a flat 2.4 for every bolt before this
-  PHASE2_BOLT_STREAK_LEN: 24, // was a flat 16
-  PHASE2_LASER_PITCH: 0.72,   // playbackRate — lower = deeper/heavier "bigger blast" feel
+  // jump ends onward is visually and audibly a heavier cannon, not just a
+  // recolor: blue, bigger, slower than the fast green weapon used before
+  // it, and using the real assets/star-battle-laser-big.mp3 file (a
+  // genuinely different recording, not a pitch-shifted version of the
+  // phase-1 sound) — see the laserBigPool below.
+  PHASE2_BOLT_SPEED: 550,      // was sharing the green weapon's 900 — now genuinely slower
+  PHASE2_BOLT_WIDTH: 5.5,      // was 3.6, which still read as "a bit thicker" rather than "bigger"
+  PHASE2_BOLT_STREAK_LEN: 36,  // was 24
 
   // Trimmed further from the original tuning — playtesting found the
   // screen too busy even at the first cut, and fighters/rocks were
@@ -120,10 +121,19 @@ const CONFIG = {
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
-  BOSS_HP: 5,  // was 7 — easier fight per feedback
+  BOSS_HP: 4,  // was 7, then 5 — feedback was landing every shot and still not killing it
   BOSS_WEAKPOINT_DRIFT_MIN_MS: 2600,
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
-  BOSS_TARGETABLE_Z: 16, // weak point only does damage once boss.z closes inside this
+  // Was 16 (targetable only in roughly the closing third of the
+  // encounter) — that turned out to be the real problem: the weak point
+  // marker was fully visible and inviting to shoot at from the moment
+  // the boss appeared, but hits on it silently did nothing until boss.z
+  // dropped this low, with no clear signal why. Raised to just under
+  // where the boss's z sits right as hyperspace ends (~31, see
+  // BOSS_Z_START/END's progress formula in stepGameplay), so it's
+  // functionally targetable for almost the entire post-hyperspace
+  // encounter instead of only its last few seconds.
+  BOSS_TARGETABLE_Z: 33,
 
   // Hyperspace jump into the boss encounter, right when it triggers at
   // BOSS_SPAWN_TIME: an 8-second warp-streak starfield transition (its
@@ -151,7 +161,13 @@ const CONFIG = {
   BOSS_RADIUS: 7,
   BOSS_HULL_HIT_MULT: 1.15,
   BOSS_WEAKPOINT_RADIUS: 1.0,  // was 0.8 — bigger, more unmistakable target
-  BOSS_WEAKPOINT_HIT_MULT: 1.4,
+  // Was 1.4 — with the boss now targetable much earlier (while it's
+  // still relatively small/distant), the hit RADIUS at that range was
+  // tiny in actual pixels, smaller than a single keyboard sector-step —
+  // a well-aimed shot could genuinely miss just from step granularity.
+  // Much more forgiving now, and the floor below (used when the boss is
+  // very far/small) is bigger too.
+  BOSS_WEAKPOINT_HIT_MULT: 2.4,
 
   SHIELD_DAMAGE_ROCK: 9,
 
@@ -221,16 +237,29 @@ const laserPool = Array.from({ length: LASER_POOL_SIZE }, () => {
   a.volume = 0.14; // was too loud at the original 0.35 in playtesting
   return a;
 });
+// Real "bigger blast" laser file for the phase-2 weapon (see the
+// CONFIG.PHASE2_* comment) — a genuinely different recording, not a
+// pitch-shifted version of the phase-1 sound.
+const laserBigPool = Array.from({ length: LASER_POOL_SIZE }, () => {
+  const a = new Audio('../../assets/star-battle-laser-big.mp3');
+  a.volume = 0.28;
+  return a;
+});
 let laserIdx = 0;
+let laserBigIdx = 0;
 let muted = false;
-// phase2 (bool): plays the same file at a lower pitch for the deeper,
-// "bigger blast" post-hyperspace weapon — see PHASE2_LASER_PITCH.
 function playLaser(phase2) {
   if (muted) return;
+  if (phase2) {
+    const a = laserBigPool[laserBigIdx];
+    laserBigIdx = (laserBigIdx + 1) % LASER_POOL_SIZE;
+    a.currentTime = 0;
+    a.play().catch(() => {});
+    return;
+  }
   const a = laserPool[laserIdx];
   laserIdx = (laserIdx + 1) % LASER_POOL_SIZE;
   a.currentTime = 0;
-  a.playbackRate = phase2 ? CONFIG.PHASE2_LASER_PITCH : 1;
   a.play().catch(() => {});
 }
 
@@ -814,7 +843,7 @@ class MainScene extends Phaser.Scene {
 
     if (!inHyperspace) {
       for (const b of this.bolts) {
-        const step = CONFIG.BOLT_SPEED * dt;
+        const step = (b.phase2 ? CONFIG.PHASE2_BOLT_SPEED : CONFIG.BOLT_SPEED) * dt;
         b.x += b.dirX * step; b.y += b.dirY * step;
         b.traveled += step;
         if (b.traveled >= b.maxDist || b.x < -50 || b.x > GAME_WIDTH + 50 || b.y < -50 || b.y > GAME_HEIGHT + 50) b.dead = true;
