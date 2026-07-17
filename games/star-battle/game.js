@@ -109,9 +109,9 @@ const CONFIG = {
   // screen too busy even at the first cut, and fighters/rocks were
   // spawning close enough to already read as "appearing" at a noticeable
   // size instead of growing gradually from a genuinely distant start.
-  ENEMY_SPAWN_MIN_MS: 2210, // 2600 * 0.85 — 15% more frequent spawns per feedback
-  ENEMY_SPAWN_MAX_MS: 3740, // 4400 * 0.85
-  ENEMY_MAX_ALIVE: 2,
+  ENEMY_SPAWN_MIN_MS: 1879, // 2210 * 0.85 — another 15% more frequent spawns per feedback
+  ENEMY_SPAWN_MAX_MS: 3179, // 3740 * 0.85
+  ENEMY_MAX_ALIVE: 3,       // was 2 — more ships on screen at once to go with the faster spawn rate
   ENEMY_HP: 3,
   ENEMY_Z_SPAWN_MIN: 26,       // far spawn distance, was a near "already in combat range" 13-17
   ENEMY_Z_SPAWN_MAX: 34,
@@ -126,10 +126,26 @@ const CONFIG = {
   ROCK_MAX_ALIVE: 2,
   ROCK_Z_START: 55,   // was 30 — spawns much further out now
   ROCK_Z_SPEED: 4.0,  // was 5.6 — slower base approach speed
+  // Was a tight +-1.5 world-unit spread on both axes — with ROCK_Z_START
+  // this far out, that's such a small offset from dead center that every
+  // rock read as "coming from the middle of the screen" regardless of the
+  // random roll. Widened to roughly the same spread enemies already use
+  // (see spawnEnemy()) so rocks visibly enter from varied points across
+  // the screen instead of clustering near the crosshair. Still a fixed
+  // x/y per rock for its whole approach — straight-line, no weaving —
+  // only the STARTING point is randomized, same motion as before.
+  ROCK_X_SPREAD: 10,
+  ROCK_Y_SPREAD: 6,
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
-  BOSS_HP: 3,  // was 7, then 5, then 4 — still reported too hard to kill
+  // Was nerfed 7 -> 5 -> 4 -> 3 while bolts were getting swallowed by the
+  // boss's own hull hitbox (see resolveBoltCollisions()) and hits on the
+  // weak point rarely landed at all. Now that that's fixed and every
+  // well-aimed shot actually reaches the weak point, 3 HP meant the boss
+  // could die in under a second (an easy 3-shot burst), so raised back up
+  // now that hits are reliable again.
+  BOSS_HP: 10,
   BOSS_WEAKPOINT_DRIFT_MIN_MS: 2600,
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
   // Was 16 (targetable only in roughly the closing third of the
@@ -624,8 +640,8 @@ class MainScene extends Phaser.Scene {
 
   spawnRock() {
     this.rocks.push({
-      x: (Math.random() - 0.5) * 3,
-      y: (Math.random() - 0.5) * 3,
+      x: (Math.random() - 0.5) * CONFIG.ROCK_X_SPREAD,
+      y: (Math.random() - 0.5) * CONFIG.ROCK_Y_SPREAD,
       z: CONFIG.ROCK_Z_START,
       spin: Math.random() * Math.PI * 2,
       spinSpeed: (Math.random() - 0.5) * 2,
