@@ -121,19 +121,19 @@ const CONFIG = {
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
-  BOSS_HP: 4,  // was 7, then 5 — feedback was landing every shot and still not killing it
+  BOSS_HP: 3,  // was 7, then 5, then 4 — still reported too hard to kill
   BOSS_WEAKPOINT_DRIFT_MIN_MS: 2600,
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
   // Was 16 (targetable only in roughly the closing third of the
   // encounter) — that turned out to be the real problem: the weak point
   // marker was fully visible and inviting to shoot at from the moment
   // the boss appeared, but hits on it silently did nothing until boss.z
-  // dropped this low, with no clear signal why. Raised to just under
-  // where the boss's z sits right as hyperspace ends (~31, see
-  // BOSS_Z_START/END's progress formula in stepGameplay), so it's
-  // functionally targetable for almost the entire post-hyperspace
-  // encounter instead of only its last few seconds.
-  BOSS_TARGETABLE_Z: 33,
+  // dropped this low, with no clear signal why. Raised well above where
+  // the boss's z sits right as hyperspace ends (~31, see BOSS_Z_START/
+  // END's progress formula in stepGameplay), so it's targetable from
+  // essentially the instant it's revealed, not just "most of" the
+  // encounter.
+  BOSS_TARGETABLE_Z: 38,
 
   // Hyperspace jump into the boss encounter, right when it triggers at
   // BOSS_SPAWN_TIME: an 8-second warp-streak starfield transition (its
@@ -161,13 +161,12 @@ const CONFIG = {
   BOSS_RADIUS: 7,
   BOSS_HULL_HIT_MULT: 1.15,
   BOSS_WEAKPOINT_RADIUS: 1.0,  // was 0.8 — bigger, more unmistakable target
-  // Was 1.4 — with the boss now targetable much earlier (while it's
-  // still relatively small/distant), the hit RADIUS at that range was
-  // tiny in actual pixels, smaller than a single keyboard sector-step —
-  // a well-aimed shot could genuinely miss just from step granularity.
-  // Much more forgiving now, and the floor below (used when the boss is
-  // very far/small) is bigger too.
-  BOSS_WEAKPOINT_HIT_MULT: 2.4,
+  // Was 1.4, then 2.4 — with the boss targetable much earlier (while
+  // it's still relatively small/distant), the hit RADIUS at that range
+  // was tiny in actual pixels, smaller than a single keyboard
+  // sector-step — a well-aimed shot could genuinely miss just from step
+  // granularity. Still reported too hard to kill at 2.4, pushed further.
+  BOSS_WEAKPOINT_HIT_MULT: 3.5,
 
   SHIELD_DAMAGE_ROCK: 9,
 
@@ -353,6 +352,17 @@ function primeAudio() {
   laserPool.forEach((a) => {
     a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
   });
+  laserBigPool.forEach((a) => {
+    a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
+  });
+
+  // The whoosh's AudioContext (see getSfxCtx()/playWhoosh()) needs to be
+  // both CREATED and RESUMED here, synchronously in the real click
+  // gesture — not lazily on its first actual use ~60s into a run, by
+  // which point there's no gesture on the call stack for the browser's
+  // autoplay policy to key off, and it can end up silently never
+  // producing sound at all.
+  getSfxCtx();
 }
 
 // ---------------------------------------------------------------------
@@ -899,7 +909,7 @@ class MainScene extends Phaser.Scene {
         const hullRad = CONFIG.BOSS_RADIUS * CONFIG.BOSS_HULL_HIT_MULT * bp.scale;
         if (dist2(b.x, b.y, bp.x, bp.y) < hullRad * hullRad) {
           const wp = project(this.boss.x + this.boss.wx, this.boss.y + this.boss.wy, this.boss.z);
-          const wRad = Math.max(10, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
+          const wRad = Math.max(16, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
           const targetable = this.boss.z <= CONFIG.BOSS_TARGETABLE_Z;
           if (targetable && dist2(b.x, b.y, wp.x, wp.y) < wRad * wRad) {
             b.dead = true; this.boss.hp--; this.score += CONFIG.SCORE_BOSS_HIT;
