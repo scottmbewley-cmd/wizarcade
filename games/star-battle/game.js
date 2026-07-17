@@ -60,8 +60,21 @@ const CONFIG = {
   SECTOR_COLS: 7,   // used only to derive the per-step distance below (GAME_WIDTH / this)
   SECTOR_ROWS: 9,   // same, for the vertical step distance
   SECTOR_MARGIN: 16,     // reticle can't be stepped closer to the canvas edge than this
-  SECTOR_STEP_MS: 110,   // min time between steps on one axis while a direction is held
+  SECTOR_STEP_MS: 110,   // min time between steps on one axis while a direction is held — KEYBOARD only
   SECTOR_EASE_RATE: 12,  // higher = snappier catch-up to the target (not a speed cap)
+
+  // Touch pad only — inverse-distance speed: touching near the pad's own
+  // dead center moves the target fast (continuously, not stepped), and
+  // speed falls off the further from center the touch is, down to a
+  // floor rather than all the way to zero. The idea: as a thumb
+  // naturally eases back toward center while approaching a target, the
+  // reticle naturally slows into it instead of overshooting — the
+  // opposite of a standard analog stick's dead-zone-at-center curve, by
+  // design. Keyboard has no "distance from center" to give this to, so
+  // it keeps the fixed-step system above unchanged.
+  TOUCH_MAX_SPEED: 260,        // px/sec, right at the pad's dead center
+  TOUCH_MIN_SPEED_MULT: 0.12,  // speed multiplier floor at full deflection — never a hard stop at the edge
+  TOUCH_DIR_DEADZONE: 0.04,    // radius (of the pad's -1..1 space) too close to center to read a stable direction from
 
   BURST_SIZE: 5,           // bolts per burst (also the effective "max active" cap)
   BURST_GAP_MS: 65,        // time between bolts within a burst
@@ -291,12 +304,17 @@ class MainScene extends Phaser.Scene {
 
     this.createController();
 
-    this.padDirs = { left: false, right: false, up: false, down: false };
+    // (vx, vy): a continuous per-frame velocity, already speed-scaled —
+    // see createController()'s comment for the inverse-distance curve
+    // this is built from. {0,0} whenever the pad isn't touched.
+    this.touchVel = { x: 0, y: 0 };
     this.controller.onMove((data) => {
-      this.padDirs.left = !!(data.active && data.left);
-      this.padDirs.right = !!(data.active && data.right);
-      this.padDirs.up = !!(data.active && data.up);
-      this.padDirs.down = !!(data.active && data.down);
+      if (!data.active || data.x == null || data.y == null) { this.touchVel.x = 0; this.touchVel.y = 0; return; }
+      const dist = Math.hypot(data.x, data.y);
+      if (dist < CONFIG.TOUCH_DIR_DEADZONE) { this.touchVel.x = 0; this.touchVel.y = 0; return; }
+      const speedMul = Math.max(CONFIG.TOUCH_MIN_SPEED_MULT, 1 - Math.min(1, dist));
+      this.touchVel.x = (data.x / dist) * speedMul * CONFIG.TOUCH_MAX_SPEED;
+      this.touchVel.y = (data.y / dist) * speedMul * CONFIG.TOUCH_MAX_SPEED;
     });
 
     this.state = 'start'; // 'start' | 'playing' | 'ended'
@@ -367,11 +385,21 @@ class MainScene extends Phaser.Scene {
   // no analog magnitude to read — the smooth "glide" feel comes from
   // easing toward the free-floating target in stepGameplay(), not from
   // the input itself needing to be analog.
+  // "absolute" mode — reports where the touch CURRENTLY is within the pad
+  // rectangle (mapped via rangeX/rangeY to a -1..1 space centered on the
+  // pad itself), not a drag offset from wherever the touch first landed.
+  // That's the correct fit for "distance from the pad's own dead center":
+  // it doesn't matter where you first pressed down, only where your
+  // thumb is right now relative to the pad's middle. See the
+  // touchVel/onMove wiring in create() for the inverse-distance speed
+  // curve built from this.
   createController() {
     this.controller = new WizController({
       target: document.getElementById('page-frame'),
-      mode: 'zone',
+      mode: 'absolute',
       directions: { left: true, right: true, up: true, down: true },
+      rangeX: [-1, 1],
+      rangeY: [-1, 1],
       tap: false,
       label: 'AIM',
       adjustable: true,
@@ -385,17 +413,17 @@ class MainScene extends Phaser.Scene {
     });
   }
 
-  // Combined keyboard + touch-pad direction state. Keyboard can hold two
-  // perpendicular keys at once for a true diagonal step; zone mode only
-  // ever reports one axis at a time, so touch-only diagonal movement
-  // happens by alternating steps across consecutive ticks instead — still
-  // reads as a smooth diagonal path once eased.
+  // Keyboard-only now — touch drives touchVel continuously instead (see
+  // create()), since sector-stepping's discrete rate-limited steps aren't
+  // a fit for the inverse-distance analog speed curve the touch pad
+  // needs. Keyboard keeps the fixed-step system since a key press has no
+  // "distance from center" to modulate speed with anyway.
   dirInput() {
     return {
-      left: !!(this.keys.ArrowLeft || this.keys.KeyA || this.padDirs.left),
-      right: !!(this.keys.ArrowRight || this.keys.KeyD || this.padDirs.right),
-      up: !!(this.keys.ArrowUp || this.keys.KeyW || this.padDirs.up),
-      down: !!(this.keys.ArrowDown || this.keys.KeyS || this.padDirs.down),
+      left: !!(this.keys.ArrowLeft || this.keys.KeyA),
+      right: !!(this.keys.ArrowRight || this.keys.KeyD),
+      up: !!(this.keys.ArrowUp || this.keys.KeyW),
+      down: !!(this.keys.ArrowDown || this.keys.KeyS),
     };
   }
 
@@ -558,6 +586,14 @@ class MainScene extends Phaser.Scene {
       if (dir.up) { this.targetY -= step.h; this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
       else if (dir.down) { this.targetY += step.h; this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
     }
+
+    // Touch pad: continuous, not stepped — speed already baked into
+    // touchVel by the inverse-distance-from-pad-center curve computed in
+    // create()'s onMove callback (fast near the pad's dead center, slower
+    // toward its edge, floored rather than hitting zero).
+    this.targetX += this.touchVel.x * dt;
+    this.targetY += this.touchVel.y * dt;
+
     this.targetX = Math.max(CONFIG.SECTOR_MARGIN, Math.min(GAME_WIDTH - CONFIG.SECTOR_MARGIN, this.targetX));
     this.targetY = Math.max(CONFIG.SECTOR_MARGIN, Math.min(GAME_HEIGHT - CONFIG.SECTOR_MARGIN, this.targetY));
 
