@@ -56,14 +56,44 @@ const COLOR_BORDER = 0x2a2c3a;
 // by both the head and body, with isHead just adding the eyes): a bright
 // top sheen, a mid "lit face" tone, a darker "shadow face" tone, and a
 // thick near-black outline, same structure the logo's snake segments use.
-const COLOR_SNAKE_SHEEN = 0xc8ffb0;
-const COLOR_SNAKE_LIGHT = 0x7fe37a;
-const COLOR_SNAKE_MID = 0x4caf50;
-const COLOR_SNAKE_DARK = 0x2c7a3f;
+// The outline/eyes stay fixed regardless of color; sheen/mid/dark/glow are
+// all DERIVED from one base hue per palette entry below (see lerpColor +
+// drawSnakeSegmentTexture) rather than fixed constants, since the snake
+// now recolors itself every feed (see NEON_PALETTE).
 const COLOR_SNAKE_OUTLINE = 0x0c1c12;
-const COLOR_SNAKE_GLOW = 0x4dffa0;
 const COLOR_SNAKE_EYE_WHITE = 0xffffff;
 const COLOR_SNAKE_EYE_PUPIL = 0x18140f;
+
+// Blends two 0xRRGGBB colors — t=0 is pure a, t=1 is pure b. Used to derive
+// each neon hue's lit-top/dark-shadow/glossy-sheen tones from one base
+// color per palette entry, instead of hand-authoring 4 shades x 10 colors.
+function lerpColor(a, b, t) {
+  const ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
+  const br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const b2 = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | b2;
+}
+
+// The snake cycles through these one hue per food eaten (see
+// MainScene.colorIndex — incremented in stepTick(), wrapping back to 0
+// after the 10th so it repeats), starting on index 0 (the original brand
+// green) each round. Bright/saturated on purpose — "neon variations" per
+// feedback — spanning the color wheel rather than close variants of one
+// hue, so each feed reads as a clear, distinct change.
+const NEON_PALETTE = [
+  0x39ff6a, // green (default/round-start)
+  0x2dfcff, // cyan
+  0x3d8bff, // blue
+  0xaa3dff, // violet
+  0xff3dc6, // magenta
+  0xff3d3d, // red
+  0xff8a3d, // orange
+  0xf5ff3d, // yellow
+  0xa6ff3d, // lime
+  0x39ffc3, // mint/teal
+];
 
 // Food — glowing gold orb.
 const COLOR_FOOD_LIGHT = 0xffe98a;
@@ -81,9 +111,8 @@ const COLOR_STAR_MAGENTA = 0xff6bd6;
 // Text style configs (Phaser text color/stroke need CSS-string colors,
 // not the 0xRRGGBB numbers everything else here uses) — see create()'s
 // scoreText/lenText and onSelfCollision()'s panel text for the literal
-// "#ffd76b"/"#6fe6da" values, kept in sync with COLOR_SNAKE_GLOW/
-// COLOR_FOOD_GLOW's palette by eye rather than duplicated as number
-// constants here.
+// "#ffd76b"/"#6fe6da" values, kept in sync with COLOR_FOOD_GLOW's palette
+// by eye rather than duplicated as number constants here.
 
 function wrap(v, max) {
   return ((v % max) + max) % max;
@@ -135,24 +164,30 @@ const SEG_RADIUS = 9;
 // edge, and a thick near-black outline. isHead also bakes in the logo's
 // big cartoon eyes, always drawn facing "right" (local 0deg) — the
 // sprite is rotated afterward via setAngle() to match actual heading,
-// same trick Munch Man uses for the muncher's mouth-facing.
-function drawSnakeSegmentTexture(gfx, key, isHead) {
+// same trick Munch Man uses for the muncher's mouth-facing. baseColor is
+// one NEON_PALETTE entry — mid/dark/sheen/glow are all derived from it via
+// lerpColor rather than being fixed, so this can bake a full 10-color set.
+function drawSnakeSegmentTexture(gfx, key, isHead, baseColor) {
   gfx.clear();
+
+  const mid = baseColor;
+  const dark = lerpColor(mid, 0x000000, 0.4);
+  const sheen = lerpColor(mid, 0xffffff, 0.6);
 
   const cx = SEG_SIZE / 2;
   const cy = SEG_SIZE / 2;
-  drawSoftGlow(gfx, cx, cy, SEG_SIZE / 2, COLOR_SNAKE_GLOW, 7, 0.16);
+  drawSoftGlow(gfx, cx, cy, SEG_SIZE / 2, mid, 7, 0.18);
 
   const x = SEG_PAD;
   const y = SEG_PAD;
 
-  gfx.fillStyle(COLOR_SNAKE_DARK, 1);
+  gfx.fillStyle(dark, 1);
   gfx.fillRoundedRect(x, y, TILE, TILE, SEG_RADIUS);
 
-  gfx.fillStyle(COLOR_SNAKE_MID, 1);
+  gfx.fillStyle(mid, 1);
   gfx.fillRoundedRect(x, y, TILE, TILE * 0.68, { tl: SEG_RADIUS, tr: SEG_RADIUS, bl: 0, br: 0 });
 
-  gfx.fillStyle(isHead ? COLOR_SNAKE_SHEEN : COLOR_SNAKE_LIGHT, 0.9);
+  gfx.fillStyle(sheen, 0.9);
   gfx.fillRoundedRect(x + 4, y + 3, TILE - 8, TILE * 0.22, { tl: SEG_RADIUS - 3, tr: SEG_RADIUS - 3, bl: 0, br: 0 });
 
   gfx.lineStyle(3, COLOR_SNAKE_OUTLINE, 1);
@@ -407,8 +442,14 @@ class MainScene extends Phaser.Scene {
 
   buildTextures() {
     const gfx = this.add.graphics();
-    drawSnakeSegmentTexture(gfx, "snakeHead", true);
-    drawSnakeSegmentTexture(gfx, "snakeBody", false);
+    // One head/body texture pair PER neon palette entry, baked once up
+    // front — see NEON_PALETTE's comment: renderSnake() just switches
+    // which pre-baked key it uses ("snakeHead" + colorIndex) each feed,
+    // so recoloring costs nothing at runtime.
+    NEON_PALETTE.forEach((color, i) => {
+      drawSnakeSegmentTexture(gfx, "snakeHead" + i, true, color);
+      drawSnakeSegmentTexture(gfx, "snakeBody" + i, false, color);
+    });
     drawFoodTexture(gfx, "food");
     drawFoodPulseGlowTexture(gfx, "foodPulseGlow");
     drawBackgroundGradientTexture(gfx, "bgGradient");
@@ -563,6 +604,7 @@ class MainScene extends Phaser.Scene {
     this.tickMs = TICK_MS_START;
     this.tickAccumulator = 0;
     this.segmentSprites = [];
+    this.colorIndex = 0; // index into NEON_PALETTE — see stepTick()
 
     const startRow = Math.floor(GRID_ROWS / 2);
     const startCol = Math.floor(GRID_COLS / 2);
@@ -660,6 +702,7 @@ class MainScene extends Phaser.Scene {
       this.score += FOOD_POINTS;
       this.foodEaten++;
       this.tickMs = difficultyTickMs(this.foodEaten);
+      this.colorIndex = (this.colorIndex + 1) % NEON_PALETTE.length; // cycles through all 10, repeating
       AudioSys.playEat();
       this.pulseScoreText();
       this.spawnFood();
@@ -705,11 +748,11 @@ class MainScene extends Phaser.Scene {
       const sprite = this.segmentSprites[i];
       sprite.setPosition(tileToPixelX(cell.col), tileToPixelY(cell.row));
       if (i === 0) {
-        sprite.setTexture("snakeHead");
+        sprite.setTexture("snakeHead" + this.colorIndex);
         sprite.setAngle(this.dir.x === 1 ? 0 : this.dir.x === -1 ? 180 : this.dir.y === 1 ? 90 : -90);
       } else {
         sprite.setAngle(0);
-        sprite.setTexture("snakeBody");
+        sprite.setTexture("snakeBody" + this.colorIndex);
       }
     }
 
@@ -725,7 +768,7 @@ class MainScene extends Phaser.Scene {
   // two segments are on opposite sides of the screen, nothing to bridge).
   drawSnakeConnectors() {
     this.gConnectors.clear();
-    this.gConnectors.fillStyle(COLOR_SNAKE_MID, 1);
+    this.gConnectors.fillStyle(NEON_PALETTE[this.colorIndex], 1);
     for (let i = 0; i < this.snake.length - 1; i++) {
       const a = this.snake[i];
       const b = this.snake[i + 1];
