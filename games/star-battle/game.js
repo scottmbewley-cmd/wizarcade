@@ -101,8 +101,8 @@ const CONFIG = {
   // screen too busy even at the first cut, and fighters/rocks were
   // spawning close enough to already read as "appearing" at a noticeable
   // size instead of growing gradually from a genuinely distant start.
-  ENEMY_SPAWN_MIN_MS: 2600,
-  ENEMY_SPAWN_MAX_MS: 4400,
+  ENEMY_SPAWN_MIN_MS: 2210, // 2600 * 0.85 — 15% more frequent spawns per feedback
+  ENEMY_SPAWN_MAX_MS: 3740, // 4400 * 0.85
   ENEMY_MAX_ALIVE: 2,
   ENEMY_HP: 3,
   ENEMY_Z_SPAWN_MIN: 26,       // far spawn distance, was a near "already in combat range" 13-17
@@ -145,8 +145,8 @@ const CONFIG = {
   // z-closing-distance formula is the one exception: it keeps running off
   // elapsed run time underneath the pause (not frozen) specifically so
   // there's no sudden jump/discontinuity in how close it is the instant
-  // the jump ends and it's drawn again.
-  HYPERSPACE_DURATION_MS: 8000,
+  // the jump ends and it's drawn again. Was 8000 — shortened per feedback.
+  HYPERSPACE_DURATION_MS: 5000,
 
   // World-space object radii — screen size/hit-radius is always radius *
   // (FOCAL / z), the same formula used for positions, so these stay in
@@ -285,10 +285,11 @@ function playCrashCue() {
   });
 }
 
-// Real hyperspace-jump cue now (assets/star-battle-hyperspace.mp3, ~7s —
-// close to HYPERSPACE_DURATION_MS's 8s) — replaces the synthesized
-// filtered-noise whoosh from the previous pass, which turned out to be
-// silent in practice (its AudioContext was created too late to reliably
+// Real hyperspace-jump cue now (assets/star-battle-hyperspace.mp3, ~7s,
+// a bit longer than HYPERSPACE_DURATION_MS — fine, it just gets cut off
+// by the boss reveal) — replaces the synthesized filtered-noise whoosh
+// from the previous pass, which turned out to be silent in practice (its
+// AudioContext was created too late to reliably
 // pass autoplay policy; see primeAudio()'s comment). Plain
 // HTMLAudioElement like every other real sound in this file.
 const hyperspaceSound = new Audio('../../assets/star-battle-hyperspace.mp3');
@@ -332,6 +333,10 @@ function primeAudio() {
   // play() happens ~60s into a run, well outside this click gesture, so
   // it needs this same play-then-pause-rewind unlock now or iOS can
   // block it later the same way the laser pools would without this.
+  // load() forces it to start actively buffering right now too, rather
+  // than potentially staying lazy until the first play() call — by the
+  // time it's actually needed a minute later it should be fully ready.
+  hyperspaceSound.load();
   hyperspaceSound.play().then(() => { hyperspaceSound.pause(); hyperspaceSound.currentTime = 0; }).catch(() => {});
 }
 
@@ -402,18 +407,36 @@ class MainScene extends Phaser.Scene {
     // drawn into any one of them are. This is what replaces the old
     // per-shape ctx.shadowBlur, which cost scaled with each individual
     // shape's own on-screen size.
+    // World layer (rocks/boss/fighters/particles/starfield) at depth 10.
     this.gGreen = this.add.graphics().setDepth(10);
     this.gBlue = this.add.graphics().setDepth(10);
     this.gRed = this.add.graphics().setDepth(10);
     this.gMagenta = this.add.graphics().setDepth(10);
     this.gWhite = this.add.graphics().setDepth(10);
     this.gDim = this.add.graphics().setDepth(10); // cockpit frame — no glow, cheapest layer
+
+    // Bolts get their OWN layer above the world one (depth 20), and the
+    // crosshair its own layer above THAT (depth 30) — Phaser stacks
+    // same-depth objects by creation order, not by when each individual
+    // shape is drawn within/across different objects, so sharing gGreen
+    // between the boss hull and phase-1 bolts (as the first pass did)
+    // meant the boss could end up rendered on top of bolts (and the
+    // crosshair) depending on which color things happened to be, hiding
+    // them behind it late in the fight when the hull gets huge. Bolts and
+    // the reticle now always render above every world entity regardless.
+    this.gBoltsGreen = this.add.graphics().setDepth(20);
+    this.gBoltsBlue = this.add.graphics().setDepth(20);
+    this.gCrosshair = this.add.graphics().setDepth(30);
+
     [
       [this.gGreen, COLORS.green],
       [this.gBlue, COLORS.blue],
       [this.gRed, COLORS.red],
       [this.gMagenta, COLORS.magenta],
       [this.gWhite, COLORS.white],
+      [this.gBoltsGreen, COLORS.green],
+      [this.gBoltsBlue, COLORS.blue],
+      [this.gCrosshair, COLORS.green],
     ].forEach(([g, color]) => {
       if (g.postFX) {
         try { g.postFX.addGlow(color, 0, 1.1, false, 0.15, 8); } catch (e) { /* Canvas-renderer fallback: no FX pipeline, just skip the glow */ }
@@ -930,6 +953,7 @@ class MainScene extends Phaser.Scene {
   render() {
     this.gGreen.clear(); this.gBlue.clear(); this.gRed.clear();
     this.gMagenta.clear(); this.gWhite.clear(); this.gDim.clear();
+    this.gBoltsGreen.clear(); this.gBoltsBlue.clear(); this.gCrosshair.clear();
 
     this.drawStarfield();
 
@@ -1096,7 +1120,7 @@ class MainScene extends Phaser.Scene {
 
   drawBolts() {
     for (const b of this.bolts) {
-      const g = b.phase2 ? this.gBlue : this.gGreen;
+      const g = b.phase2 ? this.gBoltsBlue : this.gBoltsGreen;
       const width = b.phase2 ? CONFIG.PHASE2_BOLT_WIDTH : 2.4;
       const len = b.phase2 ? CONFIG.PHASE2_BOLT_STREAK_LEN : 16;
       g.lineStyle(width, b.phase2 ? COLORS.blue : COLORS.green, 1);
@@ -1125,24 +1149,24 @@ class MainScene extends Phaser.Scene {
 
   drawCrosshair(x, y) {
     const t = performance.now() / 500;
-    this.gGreen.lineStyle(1.6, COLORS.green, 1);
-    this.gGreen.strokeCircle(x, y, 26);
-    this.gGreen.strokeCircle(x, y, 14 + Math.sin(t) * 2);
-    this.gGreen.beginPath();
-    this.gGreen.moveTo(x - 38, y); this.gGreen.lineTo(x - 16, y);
-    this.gGreen.moveTo(x + 16, y); this.gGreen.lineTo(x + 38, y);
-    this.gGreen.moveTo(x, y - 38); this.gGreen.lineTo(x, y - 16);
-    this.gGreen.moveTo(x, y + 16); this.gGreen.lineTo(x, y + 38);
-    this.gGreen.strokePath();
+    this.gCrosshair.lineStyle(1.6, COLORS.green, 1);
+    this.gCrosshair.strokeCircle(x, y, 26);
+    this.gCrosshair.strokeCircle(x, y, 14 + Math.sin(t) * 2);
+    this.gCrosshair.beginPath();
+    this.gCrosshair.moveTo(x - 38, y); this.gCrosshair.lineTo(x - 16, y);
+    this.gCrosshair.moveTo(x + 16, y); this.gCrosshair.lineTo(x + 38, y);
+    this.gCrosshair.moveTo(x, y - 38); this.gCrosshair.lineTo(x, y - 16);
+    this.gCrosshair.moveTo(x, y + 16); this.gCrosshair.lineTo(x, y + 38);
+    this.gCrosshair.strokePath();
 
     const tick = 6, r = 30;
     [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sy]) => {
-      this.gGreen.beginPath();
-      this.gGreen.moveTo(x + sx * r, y + sy * r);
-      this.gGreen.lineTo(x + sx * (r + tick), y + sy * r);
-      this.gGreen.moveTo(x + sx * r, y + sy * r);
-      this.gGreen.lineTo(x + sx * r, y + sy * (r + tick));
-      this.gGreen.strokePath();
+      this.gCrosshair.beginPath();
+      this.gCrosshair.moveTo(x + sx * r, y + sy * r);
+      this.gCrosshair.lineTo(x + sx * (r + tick), y + sy * r);
+      this.gCrosshair.moveTo(x + sx * r, y + sy * r);
+      this.gCrosshair.lineTo(x + sx * r, y + sy * (r + tick));
+      this.gCrosshair.strokePath();
     });
   }
 
