@@ -123,9 +123,9 @@ const CONFIG = {
   // return-fire marks were unwanted clutter. They're a scoring target
   // only now; rocks are the only shield-damage source pre-boss.
 
-  ROCK_SPAWN_MIN_MS: 3200,
-  ROCK_SPAWN_MAX_MS: 5200,
-  ROCK_MAX_ALIVE: 2,
+  ROCK_SPAWN_MIN_MS: 2133, // 3200 / 1.5 — 50% more rocks per feedback
+  ROCK_SPAWN_MAX_MS: 3467, // 5200 / 1.5
+  ROCK_MAX_ALIVE: 3,       // was 2 — +50%, to go with the faster spawn rate
   ROCK_Z_START: 55,   // was 30 — spawns much further out now
   ROCK_Z_SPEED: 4.0,  // was 5.6 — slower base approach speed
   // A world-unit x/y spread (what this used to be, e.g. +-5) doesn't
@@ -141,6 +141,16 @@ const CONFIG = {
   // fixed x/y per rock for its whole approach (straight-line, no weaving)
   // — only the starting point is randomized, same motion as before.
   ROCK_SPAWN_SCREEN_MARGIN: 30,
+  // Per feedback: the full-canvas spread above is good and stays as-is,
+  // but half of all rocks should ALSO specifically spawn from a tighter
+  // region around dead center — since only near-center spawns ever end
+  // up close enough to actually threaten the ship (see ROCK_IMPACT_RADIUS
+  // below), this keeps a real mix of "flies past, just variety" outside
+  // spawns AND "genuine threat" center spawns, rather than nearly all of
+  // them being harmless flybys.
+  ROCK_SPAWN_CENTRE_CHANCE: 0.5,
+  ROCK_SPAWN_CENTRE_HALF_W: 90,
+  ROCK_SPAWN_CENTRE_HALF_H: 130,
   // How close to dead-center (screen px) a rock has to be when it reaches
   // striking distance to actually count as a hit on the ship — see its
   // use in stepGameplay()'s rock loop. Rocks that started off-center now
@@ -652,13 +662,20 @@ class MainScene extends Phaser.Scene {
   }
 
   spawnRock() {
-    // See the ROCK_SPAWN_SCREEN_MARGIN comment above — pick the on-screen
-    // spawn point first, then back-solve the world x/y that projects there
-    // at ROCK_Z_START, rather than picking a world offset directly.
+    // See the ROCK_SPAWN_SCREEN_MARGIN/ROCK_SPAWN_CENTRE_* comments above —
+    // pick the on-screen spawn point first (either full-canvas or the
+    // tighter centre region), then back-solve the world x/y that projects
+    // there at ROCK_Z_START, rather than picking a world offset directly.
     const m = CONFIG.ROCK_SPAWN_SCREEN_MARGIN;
     const spawnScale = FOCAL / CONFIG.ROCK_Z_START;
-    const screenX = rand(m, GAME_WIDTH - m);
-    const screenY = rand(m, GAME_HEIGHT - m);
+    let screenX, screenY;
+    if (Math.random() < CONFIG.ROCK_SPAWN_CENTRE_CHANCE) {
+      screenX = centerX + rand(-CONFIG.ROCK_SPAWN_CENTRE_HALF_W, CONFIG.ROCK_SPAWN_CENTRE_HALF_W);
+      screenY = centerY + rand(-CONFIG.ROCK_SPAWN_CENTRE_HALF_H, CONFIG.ROCK_SPAWN_CENTRE_HALF_H);
+    } else {
+      screenX = rand(m, GAME_WIDTH - m);
+      screenY = rand(m, GAME_HEIGHT - m);
+    }
     this.rocks.push({
       x: (screenX - centerX) / spawnScale,
       y: (screenY - centerY) / spawnScale,
