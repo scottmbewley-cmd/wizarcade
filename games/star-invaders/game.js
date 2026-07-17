@@ -299,13 +299,14 @@ class MainScene extends Phaser.Scene {
     super("main");
   }
 
-  // Only the small one-shot laser sfx (~49KB) loads here, blocking nothing
-  // meaningful before first paint. The much larger background music track
-  // (~2.4MB) is deliberately NOT loaded here — see loadMusicLazily(),
+  // Only the small one-shot laser sfx (~49KB + ~28KB) load here, blocking
+  // nothing meaningful before first paint. The much larger background music
+  // track (~2.4MB) is deliberately NOT loaded here — see loadMusicLazily(),
   // kicked off from the end of create() instead, so it never delays the
   // game becoming visible/interactive on a slow connection.
   preload() {
     this.load.audio("laserfire", "audio/laserfire.mp3");
+    this.load.audio("laserfireAlt", "audio/laserfire-alt.mp3");
   }
 
   buildTextures() {
@@ -669,13 +670,21 @@ class MainScene extends Phaser.Scene {
       this.musicSound.destroy();
       this.musicSound = null;
     }
-    if (this.laserSound) {
-      this.laserSound.destroy();
-      this.laserSound = null;
+    if (this.laserSounds) {
+      this.laserSounds.forEach((s) => s.destroy());
+      this.laserSounds = null;
     }
     this.muted = loadMuted();
     this.sound.mute = this.muted;
-    this.laserSound = this.sound.add("laserfire", { volume: 0.5 });
+    // Two different laser recordings, one picked at random per shot (see
+    // playRandomLaser()) instead of always the same one — a single fixed
+    // sfx firing on every shot gets monotonous fast; alternating between
+    // two distinct sounds reads as far more varied/interesting despite
+    // being almost no extra code.
+    this.laserSounds = [
+      this.sound.add("laserfire", { volume: 0.5 }),
+      this.sound.add("laserfireAlt", { volume: 0.5 }),
+    ];
     // Carries across a retry within the same page session: if the browser
     // already unlocked audio earlier (see the steering-zone/retry-button
     // hooks below), music should resume immediately on restart instead of
@@ -925,7 +934,14 @@ class MainScene extends Phaser.Scene {
     this.playerBullets.add(bullet);
     bullet.body.setVelocityY(-PLAYER_BULLET_SPEED * this.speedMultiplier);
 
-    this.laserSound.play();
+    this.playRandomLaser();
+  }
+
+  // Picks exactly one of the two laser recordings per shot, never both —
+  // see the comment where this.laserSounds is created.
+  playRandomLaser() {
+    const sound = this.laserSounds[Math.floor(Math.random() * this.laserSounds.length)];
+    sound.play();
   }
 
   update(time, delta) {
