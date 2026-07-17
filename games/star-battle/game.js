@@ -44,19 +44,24 @@ const CONFIG = {
   BOSS_SPAWN_TIME: 60,     // seconds into the run the boss appears
   SHIELD_MAX: 100,
 
-  // Sector steering — the reticle doesn't fly freely under raw per-frame
-  // velocity; it steps between fixed grid-cell centers (one cell per
-  // direction press, rate-limited) and eases smoothly toward whichever
-  // cell is currently targeted. Continuous free aiming — even the
-  // proportional analog version — proved too twitchy/imprecise to
-  // reliably land on a moving target in playtesting. Landing "in the
-  // right cell" is far more forgiving than needing pixel-precise control,
-  // especially on a touch pad.
-  SECTOR_COLS: 7,
-  SECTOR_ROWS: 9,
-  SECTOR_MARGIN: 16,     // inset from the canvas edge the grid is built within
+  // Sector steering (hybrid of the two earlier attempts). Pure continuous
+  // free aiming — even the proportional analog version — proved too
+  // twitchy/imprecise to reliably land on a moving target. A rigid fixed
+  // grid (the reticle only ever resting at one of a small fixed set of
+  // absolute points) fixed that but couldn't finely track something
+  // continuously drifting, like the boss's weak point. This keeps sector
+  // steering's actual mechanic — fixed-size, rate-limited, per-axis steps
+  // eased smoothly into a glide, never raw per-frame velocity — but each
+  // step nudges a free-floating target BY one sector-sized increment from
+  // wherever it currently is, rather than snapping to the nearest point
+  // on a global grid. So a single press still only moves a small,
+  // predictable, non-twitchy amount, but a sequence of presses can settle
+  // the reticle at any continuous position, not just a fixed set of 63.
+  SECTOR_COLS: 7,   // used only to derive the per-step distance below (GAME_WIDTH / this)
+  SECTOR_ROWS: 9,   // same, for the vertical step distance
+  SECTOR_MARGIN: 16,     // reticle can't be stepped closer to the canvas edge than this
   SECTOR_STEP_MS: 110,   // min time between steps on one axis while a direction is held
-  SECTOR_EASE_RATE: 12,  // higher = snappier catch-up to the target cell (not a speed cap)
+  SECTOR_EASE_RATE: 12,  // higher = snappier catch-up to the target (not a speed cap)
 
   BURST_SIZE: 5,           // bolts per burst (also the effective "max active" cap)
   BURST_GAP_MS: 65,        // time between bolts within a burst
@@ -298,8 +303,8 @@ class MainScene extends Phaser.Scene {
     this.runTime = 0;
     this.score = 0;
     this.shield = CONFIG.SHIELD_MAX;
-    this.sectorCol = Math.floor(CONFIG.SECTOR_COLS / 2);
-    this.sectorRow = Math.floor(CONFIG.SECTOR_ROWS / 2);
+    this.targetX = centerX;
+    this.targetY = centerY;
     this.stepAtX = 0;
     this.stepAtY = 0;
     this.crosshair = { x: centerX, y: centerY };
@@ -360,8 +365,8 @@ class MainScene extends Phaser.Scene {
   // the same single unambiguous reading zone mode already gives those
   // games for their own grid movement. No deadzone/distance/angle math,
   // no analog magnitude to read — the smooth "glide" feel comes from
-  // easing toward the target cell in sectorTarget()/stepGameplay(), not
-  // from the input itself needing to be analog.
+  // easing toward the free-floating target in stepGameplay(), not from
+  // the input itself needing to be analog.
   createController() {
     this.controller = new WizController({
       target: document.getElementById('page-frame'),
@@ -394,12 +399,13 @@ class MainScene extends Phaser.Scene {
     };
   }
 
-  sectorTarget() {
-    const cellW = (GAME_WIDTH - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_COLS;
-    const cellH = (GAME_HEIGHT - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_ROWS;
+  // Per-step distance — same magnitude as the earlier fixed-grid version
+  // (a cell's width/height), just no longer used as an absolute grid
+  // spacing. See the CONFIG.SECTOR_* comment for the reasoning.
+  stepSize() {
     return {
-      x: CONFIG.SECTOR_MARGIN + (this.sectorCol + 0.5) * cellW,
-      y: CONFIG.SECTOR_MARGIN + (this.sectorRow + 0.5) * cellH,
+      w: (GAME_WIDTH - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_COLS,
+      h: (GAME_HEIGHT - 2 * CONFIG.SECTOR_MARGIN) / CONFIG.SECTOR_ROWS,
     };
   }
 
@@ -532,24 +538,32 @@ class MainScene extends Phaser.Scene {
   }
 
   stepGameplay(dt, now) {
-    // Sector steering: each axis steps the target cell by one, at most
-    // once per SECTOR_STEP_MS while its direction is held (independent
-    // per-axis timers, so holding two perpendicular directions steps both
-    // — a keyboard diagonal). The crosshair never jumps to the new cell;
-    // it's eased toward whatever sectorTarget() currently is every frame.
+    // Sector steering (hybrid): each axis nudges a free-floating target by
+    // one fixed sector-sized increment, at most once per SECTOR_STEP_MS
+    // while its direction is held (independent per-axis timers, so
+    // holding two perpendicular directions steps both — a keyboard
+    // diagonal). Unlike a rigid grid, the target isn't snapped to the
+    // nearest point on any fixed lattice — it's wherever the last step
+    // left it, clamped to the margin — so a sequence of small, predictable
+    // steps can settle the reticle at any continuous position. The
+    // crosshair itself never jumps; it's eased toward that target every
+    // frame.
     const dir = this.dirInput();
+    const step = this.stepSize();
     if (now >= this.stepAtX) {
-      if (dir.left) { this.sectorCol = Math.max(0, this.sectorCol - 1); this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
-      else if (dir.right) { this.sectorCol = Math.min(CONFIG.SECTOR_COLS - 1, this.sectorCol + 1); this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
+      if (dir.left) { this.targetX -= step.w; this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
+      else if (dir.right) { this.targetX += step.w; this.stepAtX = now + CONFIG.SECTOR_STEP_MS; }
     }
     if (now >= this.stepAtY) {
-      if (dir.up) { this.sectorRow = Math.max(0, this.sectorRow - 1); this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
-      else if (dir.down) { this.sectorRow = Math.min(CONFIG.SECTOR_ROWS - 1, this.sectorRow + 1); this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
+      if (dir.up) { this.targetY -= step.h; this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
+      else if (dir.down) { this.targetY += step.h; this.stepAtY = now + CONFIG.SECTOR_STEP_MS; }
     }
-    const target = this.sectorTarget();
+    this.targetX = Math.max(CONFIG.SECTOR_MARGIN, Math.min(GAME_WIDTH - CONFIG.SECTOR_MARGIN, this.targetX));
+    this.targetY = Math.max(CONFIG.SECTOR_MARGIN, Math.min(GAME_HEIGHT - CONFIG.SECTOR_MARGIN, this.targetY));
+
     const ease = 1 - Math.exp(-CONFIG.SECTOR_EASE_RATE * dt);
-    this.crosshair.x += (target.x - this.crosshair.x) * ease;
-    this.crosshair.y += (target.y - this.crosshair.y) * ease;
+    this.crosshair.x += (this.targetX - this.crosshair.x) * ease;
+    this.crosshair.y += (this.targetY - this.crosshair.y) * ease;
 
     this.updateFire(now);
 
@@ -922,8 +936,7 @@ class MainScene extends Phaser.Scene {
 
     this.state = 'playing';
     this.runTime = 0; this.score = 0; this.shield = CONFIG.SHIELD_MAX;
-    this.sectorCol = Math.floor(CONFIG.SECTOR_COLS / 2);
-    this.sectorRow = Math.floor(CONFIG.SECTOR_ROWS / 2);
+    this.targetX = centerX; this.targetY = centerY;
     this.stepAtX = 0; this.stepAtY = 0;
     this.crosshair = { x: centerX, y: centerY };
     this.enemies = []; this.rocks = []; this.bolts = []; this.enemyShots = []; this.particles = [];
