@@ -94,24 +94,26 @@ const CONFIG = {
   // genuinely different recording, not a pitch-shifted version of the
   // phase-1 sound) — see the laserBigPool below.
   PHASE2_BOLT_SPEED: 550,      // was sharing the green weapon's 900 — now genuinely slower
-  PHASE2_BOLT_WIDTH: 7.5,      // was 5.5, then 3.6 — bigger again now that fewer of them fire per burst
-  PHASE2_BOLT_STREAK_LEN: 46,  // was 36, then 24
+  PHASE2_BOLT_WIDTH: 3.8,      // was 7.5, then 5.5, then 3.6 — feedback flipped back to smaller beams
+  PHASE2_BOLT_STREAK_LEN: 24,  // was 46, then 36, then 24
   // Fewer, bigger-reading shots per burst once the boss phase begins,
   // instead of sharing the phase-1 weapon's BURST_SIZE/GAP/COOLDOWN —
   // per feedback that the big-cannon sfx needed to play slower/heavier,
   // which only reads cleanly if the shots themselves are spaced out more
-  // rather than overlapping every ~65ms like the phase-1 weapon.
-  PHASE2_BURST_SIZE: 3,
-  PHASE2_BURST_GAP_MS: 140,
-  PHASE2_BURST_COOLDOWN_MS: 620,
+  // rather than overlapping every ~65ms like the phase-1 weapon. Slowed
+  // further per follow-up feedback: fewer shots per burst, longer gaps
+  // between them, longer cooldown between bursts.
+  PHASE2_BURST_SIZE: 2,
+  PHASE2_BURST_GAP_MS: 220,
+  PHASE2_BURST_COOLDOWN_MS: 900,
 
   // Trimmed further from the original tuning — playtesting found the
   // screen too busy even at the first cut, and fighters/rocks were
   // spawning close enough to already read as "appearing" at a noticeable
   // size instead of growing gradually from a genuinely distant start.
-  ENEMY_SPAWN_MIN_MS: 1879, // 2210 * 0.85 — another 15% more frequent spawns per feedback
-  ENEMY_SPAWN_MAX_MS: 3179, // 3740 * 0.85
-  ENEMY_MAX_ALIVE: 3,       // was 2 — more ships on screen at once to go with the faster spawn rate
+  ENEMY_SPAWN_MIN_MS: 1597, // 1879 * 0.85 — yet another 15% more frequent spawns per feedback
+  ENEMY_SPAWN_MAX_MS: 2702, // 3179 * 0.85
+  ENEMY_MAX_ALIVE: 4,       // was 3, then 2 — more ships on screen at once to go with the faster spawn rate
   ENEMY_HP: 3,
   ENEMY_Z_SPAWN_MIN: 26,       // far spawn distance, was a near "already in combat range" 13-17
   ENEMY_Z_SPAWN_MAX: 34,
@@ -126,26 +128,36 @@ const CONFIG = {
   ROCK_MAX_ALIVE: 2,
   ROCK_Z_START: 55,   // was 30 — spawns much further out now
   ROCK_Z_SPEED: 4.0,  // was 5.6 — slower base approach speed
-  // Was a tight +-1.5 world-unit spread on both axes — with ROCK_Z_START
-  // this far out, that's such a small offset from dead center that every
-  // rock read as "coming from the middle of the screen" regardless of the
-  // random roll. Widened to roughly the same spread enemies already use
-  // (see spawnEnemy()) so rocks visibly enter from varied points across
-  // the screen instead of clustering near the crosshair. Still a fixed
-  // x/y per rock for its whole approach — straight-line, no weaving —
-  // only the STARTING point is randomized, same motion as before.
-  ROCK_X_SPREAD: 10,
-  ROCK_Y_SPREAD: 6,
+  // A world-unit x/y spread (what this used to be, e.g. +-5) doesn't
+  // actually produce varied-looking entry points — at ROCK_Z_START's
+  // distance, the perspective scale is so small that even a fairly wide
+  // world-space spread still projects to a tiny on-screen offset from
+  // dead center, so every rock still reads as "coming from the middle."
+  // spawnRock() below instead picks the STARTING SCREEN POSITION directly
+  // (anywhere within this margin of the canvas edges, so genuinely top-
+  // left/mid-right/low-middle/etc. are all possible) and back-solves the
+  // world x/y that projects there at ROCK_Z_START — guaranteeing real
+  // full-canvas variety at the moment a rock first appears. It's still a
+  // fixed x/y per rock for its whole approach (straight-line, no weaving)
+  // — only the starting point is randomized, same motion as before.
+  ROCK_SPAWN_SCREEN_MARGIN: 30,
+  // How close to dead-center (screen px) a rock has to be when it reaches
+  // striking distance to actually count as a hit on the ship — see its
+  // use in stepGameplay()'s rock loop. Rocks that started off-center now
+  // sweep increasingly further from center as they close in (same
+  // perspective effect as everything else here), so most full-canvas
+  // spawns naturally end up well outside this and just fly past.
+  ROCK_IMPACT_RADIUS: 130,
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
   // Was nerfed 7 -> 5 -> 4 -> 3 while bolts were getting swallowed by the
   // boss's own hull hitbox (see resolveBoltCollisions()) and hits on the
   // weak point rarely landed at all. Now that that's fixed and every
-  // well-aimed shot actually reaches the weak point, 3 HP meant the boss
-  // could die in under a second (an easy 3-shot burst), so raised back up
-  // now that hits are reliable again.
-  BOSS_HP: 10,
+  // well-aimed shot actually reaches the weak point, low HP meant the
+  // boss could die in a few seconds of accurate fire. Raised 3 -> 10,
+  // then +50% per explicit feedback ("50% more difficult to kill").
+  BOSS_HP: 30,
   BOSS_WEAKPOINT_DRIFT_MIN_MS: 2600,
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
   // Was 16 (targetable only in roughly the closing third of the
@@ -268,8 +280,9 @@ const laserBigPool = Array.from({ length: LASER_POOL_SIZE }, () => {
   // Slowed down per feedback — the raw file read as too quick/thin for a
   // "big cannon" cue. Paired with fewer, further-apart phase-2 shots (see
   // CONFIG.PHASE2_BURST_*) so a slower sound has room to play out instead
-  // of overlapping itself every ~65ms like the phase-1 weapon.
-  a.playbackRate = 0.72;
+  // of overlapping itself every ~65ms like the phase-1 weapon. Was 0.72,
+  // then 0.6 — still reported as too fast each time, dropped further.
+  a.playbackRate = 0.5;
   return a;
 });
 let laserIdx = 0;
@@ -639,9 +652,16 @@ class MainScene extends Phaser.Scene {
   }
 
   spawnRock() {
+    // See the ROCK_SPAWN_SCREEN_MARGIN comment above — pick the on-screen
+    // spawn point first, then back-solve the world x/y that projects there
+    // at ROCK_Z_START, rather than picking a world offset directly.
+    const m = CONFIG.ROCK_SPAWN_SCREEN_MARGIN;
+    const spawnScale = FOCAL / CONFIG.ROCK_Z_START;
+    const screenX = rand(m, GAME_WIDTH - m);
+    const screenY = rand(m, GAME_HEIGHT - m);
     this.rocks.push({
-      x: (Math.random() - 0.5) * CONFIG.ROCK_X_SPREAD,
-      y: (Math.random() - 0.5) * CONFIG.ROCK_Y_SPREAD,
+      x: (screenX - centerX) / spawnScale,
+      y: (screenY - centerY) / spawnScale,
       z: CONFIG.ROCK_Z_START,
       spin: Math.random() * Math.PI * 2,
       spinSpeed: (Math.random() - 0.5) * 2,
@@ -848,9 +868,20 @@ class MainScene extends Phaser.Scene {
         r.spin += r.spinSpeed * dt;
         if (r.z <= 1.1) {
           r.dead = true;
-          this.damageShield(CONFIG.SHIELD_DAMAGE_ROCK);
+          // Now that rocks spawn anywhere on screen (see spawnRock()), most
+          // sweep increasingly further from center as they close in — the
+          // same perspective effect fighters/the boss already show, and
+          // exactly what makes a wide-off-center rock read as "flying past
+          // and missing" rather than a guaranteed hit. Previously this
+          // fired unconditionally the instant z got close, so an object
+          // clearly off in a screen corner would still silently zap the
+          // shield — only rocks that are actually still near the ship's
+          // forward view when they reach striking distance count as a hit.
           const p = project(r.x, r.y, Math.max(r.z, 0.6));
-          this.spawnBurst(p.x, p.y, 6, [COLORS.red, COLORS.white], { speedMin: 60, speedMax: 140 });
+          if (Math.hypot(p.x - centerX, p.y - centerY) <= CONFIG.ROCK_IMPACT_RADIUS) {
+            this.damageShield(CONFIG.SHIELD_DAMAGE_ROCK);
+            this.spawnBurst(p.x, p.y, 6, [COLORS.red, COLORS.white], { speedMin: 60, speedMax: 140 });
+          }
         }
       }
       this.rocks = this.rocks.filter((r) => !r.dead);
