@@ -42,18 +42,48 @@ function difficultyTickMs(foodEaten) {
   return Math.max(TICK_MS_MIN, TICK_MS_START - foodEaten * TICK_MS_DECAY_PER_FOOD);
 }
 
-// --- Retro palette — neon lime snake on a near-black checkerboard, warm
-// coral food so it reads instantly against the green. Deliberately
-// distinct from Munch Man's magenta/teal. ---
-const COLOR_BG_A = 0x0b0c14;
-const COLOR_BG_B = 0x0f1019;
+// --- Brand palette — lifted directly from assets/slither-logo.png: deep
+// navy space backdrop, a green cube-snake with a soft glow, a glowing gold
+// food orb, and gold HUD typography with teal/purple/magenta as sparing
+// starfield accents. Replaces the old neon-lime-on-checkerboard retro look
+// (kept as historical color names below where a value carries over
+// unchanged, e.g. the audio system doesn't care about any of this). ---
+const COLOR_BG_TOP = 0x171c40; // subtle lighter navy at the very top of the gradient
+const COLOR_BG_BOTTOM = 0x05060f; // near-black navy at the bottom
 const COLOR_BORDER = 0x2a2c3a;
-const COLOR_SNAKE_HEAD = 0xeaffe0;
-const COLOR_SNAKE_BODY = 0x7cff4d;
-const COLOR_SNAKE_BODY_DARK = 0x4fbf2a;
-const COLOR_FOOD = 0xff6b4d;
-const COLOR_HUD_TEXT = 0x7cff4d;
-const COLOR_HUD_STROKE = 0x0c2e00;
+
+// Snake — chunky beveled-cube look (see drawSnakeSegmentTexture, shared
+// by both the head and body, with isHead just adding the eyes): a bright
+// top sheen, a mid "lit face" tone, a darker "shadow face" tone, and a
+// thick near-black outline, same structure the logo's snake segments use.
+const COLOR_SNAKE_SHEEN = 0xc8ffb0;
+const COLOR_SNAKE_LIGHT = 0x7fe37a;
+const COLOR_SNAKE_MID = 0x4caf50;
+const COLOR_SNAKE_DARK = 0x2c7a3f;
+const COLOR_SNAKE_OUTLINE = 0x0c1c12;
+const COLOR_SNAKE_GLOW = 0x4dffa0;
+const COLOR_SNAKE_EYE_WHITE = 0xffffff;
+const COLOR_SNAKE_EYE_PUPIL = 0x18140f;
+
+// Food — glowing gold orb.
+const COLOR_FOOD_LIGHT = 0xffe98a;
+const COLOR_FOOD_MID = 0xffc93c;
+const COLOR_FOOD_DARK = 0xdb8f1f;
+const COLOR_FOOD_GLOW = 0xffcf4d;
+
+// Starfield accents (sparingly used — see drawStarfieldTexture).
+const COLOR_STAR_WHITE = 0xffffff;
+const COLOR_STAR_GOLD = 0xffd76b;
+const COLOR_STAR_PURPLE = 0x9d7bff;
+const COLOR_STAR_MAGENTA = 0xff6bd6;
+
+// HUD text uses matching gold/teal hex strings directly in its Phaser
+// Text style configs (Phaser text color/stroke need CSS-string colors,
+// not the 0xRRGGBB numbers everything else here uses) — see create()'s
+// scoreText/lenText and onSelfCollision()'s panel text for the literal
+// "#ffd76b"/"#6fe6da" values, kept in sync with COLOR_SNAKE_GLOW/
+// COLOR_FOOD_GLOW's palette by eye rather than duplicated as number
+// constants here.
 
 function wrap(v, max) {
   return ((v % max) + max) % max;
@@ -66,38 +96,172 @@ function tileToPixelY(row) {
 }
 
 // --- Procedural textures (Phaser.Graphics, no external assets) ---
+//
+// Everything below is baked ONCE at load into a texture via
+// generateTexture() — the "poor man's glow" (stacking several same-hue
+// translucent circles, shrinking and getting more opaque toward the
+// center) costs nothing at runtime since it's never redrawn per frame,
+// just blitted like any other sprite. This is deliberate: a real per-
+// object WebGL postFX glow pass (as star-battle uses on a handful of
+// persistent whole-canvas layers) would get expensive here specifically
+// because the snake is a growing, unbounded number of individual
+// sprites — baking the glow into each texture keeps the runtime cost
+// completely flat regardless of snake length.
 
-function drawSnakeSegmentTexture(gfx, key, color) {
-  gfx.clear();
-  gfx.fillStyle(color, 1);
-  gfx.fillRect(0, 0, TILE, TILE);
-  gfx.lineStyle(2, 0x000000, 0.25);
-  gfx.strokeRect(1, 1, TILE - 2, TILE - 2);
-  gfx.generateTexture(key, TILE, TILE);
+function drawSoftGlow(gfx, cx, cy, maxRadius, color, layers, baseAlpha) {
+  for (let i = 0; i < layers; i++) {
+    const t = i / (layers - 1);
+    const r = maxRadius * (1 - t * 0.78);
+    const alpha = baseAlpha * (0.2 + 0.8 * t);
+    gfx.fillStyle(color, alpha);
+    gfx.fillCircle(cx, cy, r);
+  }
 }
 
-// Head gets simple dark eye-dots baked in, always facing "right" (0deg) —
-// the sprite is rotated afterward via setAngle() to match actual heading,
+// Extra canvas padding around the actual TILE-sized cube so the baked
+// glow can bleed past the tile edges without being clipped. Sprites stay
+// centered on their grid cell (Phaser's default 0.5/0.5 origin), so this
+// only affects how far the glow overflows into neighboring cells — the
+// solid cube itself still lines up edge-to-edge with its neighbors
+// exactly as before.
+const SEG_PAD = 9;
+const SEG_SIZE = TILE + SEG_PAD * 2;
+const SEG_RADIUS = 9;
+
+// Chunky beveled-cube look matching assets/slither-logo.png's snake:
+// a darker "shadow/side" base, a lighter "lit top" face flush across the
+// top (rounded only at its own top corners, so the dark base peeks out
+// as a shadow band beneath it), a glossy sheen strip along the very top
+// edge, and a thick near-black outline. isHead also bakes in the logo's
+// big cartoon eyes, always drawn facing "right" (local 0deg) — the
+// sprite is rotated afterward via setAngle() to match actual heading,
 // same trick Munch Man uses for the muncher's mouth-facing.
-function drawSnakeHeadTexture(gfx, key) {
+function drawSnakeSegmentTexture(gfx, key, isHead) {
   gfx.clear();
-  gfx.fillStyle(COLOR_SNAKE_HEAD, 1);
-  gfx.fillRect(0, 0, TILE, TILE);
-  gfx.lineStyle(2, 0x000000, 0.25);
-  gfx.strokeRect(1, 1, TILE - 2, TILE - 2);
-  gfx.fillStyle(0x0c2e00, 1);
-  gfx.fillCircle(TILE * 0.68, TILE * 0.32, 2.6);
-  gfx.fillCircle(TILE * 0.68, TILE * 0.68, 2.6);
-  gfx.generateTexture(key, TILE, TILE);
+
+  const cx = SEG_SIZE / 2;
+  const cy = SEG_SIZE / 2;
+  drawSoftGlow(gfx, cx, cy, SEG_SIZE / 2, COLOR_SNAKE_GLOW, 7, 0.16);
+
+  const x = SEG_PAD;
+  const y = SEG_PAD;
+
+  gfx.fillStyle(COLOR_SNAKE_DARK, 1);
+  gfx.fillRoundedRect(x, y, TILE, TILE, SEG_RADIUS);
+
+  gfx.fillStyle(COLOR_SNAKE_MID, 1);
+  gfx.fillRoundedRect(x, y, TILE, TILE * 0.68, { tl: SEG_RADIUS, tr: SEG_RADIUS, bl: 0, br: 0 });
+
+  gfx.fillStyle(isHead ? COLOR_SNAKE_SHEEN : COLOR_SNAKE_LIGHT, 0.9);
+  gfx.fillRoundedRect(x + 4, y + 3, TILE - 8, TILE * 0.22, { tl: SEG_RADIUS - 3, tr: SEG_RADIUS - 3, bl: 0, br: 0 });
+
+  gfx.lineStyle(3, COLOR_SNAKE_OUTLINE, 1);
+  gfx.strokeRoundedRect(x, y, TILE, TILE, SEG_RADIUS);
+
+  if (isHead) {
+    const eyeCx = x + TILE * 0.66;
+    [0.32, 0.7].forEach((fy) => {
+      const eyeCy = y + TILE * fy;
+      gfx.fillStyle(COLOR_SNAKE_EYE_WHITE, 1);
+      gfx.fillCircle(eyeCx, eyeCy, TILE * 0.16);
+      gfx.fillStyle(COLOR_SNAKE_EYE_PUPIL, 1);
+      gfx.fillCircle(eyeCx + TILE * 0.03, eyeCy, TILE * 0.09);
+      gfx.fillStyle(0xffffff, 0.85);
+      gfx.fillCircle(eyeCx + TILE * 0.06, eyeCy - TILE * 0.04, TILE * 0.03);
+    });
+  }
+
+  gfx.generateTexture(key, SEG_SIZE, SEG_SIZE);
 }
 
+// Short rounded-rect bridge drawn between two grid-adjacent snake
+// segments (see drawSnakeConnectors() in MainScene) to fill in the small
+// notch the rounded corners above would otherwise leave at every joint —
+// this is what makes a straight run of segments read as one continuous,
+// tapered body rather than a chain of separate blocks.
+const CONNECTOR_RADIUS = 6;
+
+const FOOD_PAD = 10;
+const FOOD_SIZE = TILE + FOOD_PAD * 2;
+
+// Glowing gold orb matching the logo's food art: a darker base circle
+// (its lower-right rim reads as shadow), a slightly offset lighter mid
+// circle on top (fakes a lit sphere), a soft highlight blob, and a small
+// bright glint — plus the baked halo. drawFoodPulseGlowTexture is a
+// SEPARATE, larger, softer glow-only sprite layered behind this one and
+// tweened (scale + alpha) continuously in create()/spawnFood() for the
+// actual "pulsing" brightness — this static texture's own baked glow is
+// what makes it read as glowing even at the tween's dimmest point.
 function drawFoodTexture(gfx, key) {
   gfx.clear();
-  gfx.fillStyle(COLOR_FOOD, 1);
-  gfx.fillCircle(TILE / 2, TILE / 2, TILE * 0.32);
-  gfx.fillStyle(0xffffff, 0.5);
-  gfx.fillCircle(TILE * 0.4, TILE * 0.4, TILE * 0.08);
-  gfx.generateTexture(key, TILE, TILE);
+  const cx = FOOD_SIZE / 2;
+  const cy = FOOD_SIZE / 2;
+  const r = TILE * 0.34;
+
+  drawSoftGlow(gfx, cx, cy, FOOD_SIZE / 2, COLOR_FOOD_GLOW, 8, 0.22);
+
+  gfx.fillStyle(COLOR_FOOD_DARK, 1);
+  gfx.fillCircle(cx, cy, r);
+  gfx.fillStyle(COLOR_FOOD_MID, 1);
+  gfx.fillCircle(cx - r * 0.12, cy - r * 0.12, r * 0.86);
+  gfx.fillStyle(COLOR_FOOD_LIGHT, 0.9);
+  gfx.fillCircle(cx - r * 0.32, cy - r * 0.34, r * 0.4);
+  gfx.fillStyle(0xffffff, 0.8);
+  gfx.fillCircle(cx - r * 0.4, cy - r * 0.42, r * 0.14);
+
+  gfx.lineStyle(2.5, COLOR_SNAKE_OUTLINE, 1);
+  gfx.strokeCircle(cx, cy, r);
+
+  gfx.generateTexture(key, FOOD_SIZE, FOOD_SIZE);
+}
+
+const FOOD_PULSE_GLOW_SIZE = TILE * 2.3;
+function drawFoodPulseGlowTexture(gfx, key) {
+  gfx.clear();
+  drawSoftGlow(gfx, FOOD_PULSE_GLOW_SIZE / 2, FOOD_PULSE_GLOW_SIZE / 2, FOOD_PULSE_GLOW_SIZE / 2, COLOR_FOOD_GLOW, 6, 0.16);
+  gfx.generateTexture(key, FOOD_PULSE_GLOW_SIZE, FOOD_PULSE_GLOW_SIZE);
+}
+
+// Vertical navy gradient replacing the old flat checkerboard board.
+function drawBackgroundGradientTexture(gfx, key) {
+  gfx.clear();
+  gfx.fillGradientStyle(COLOR_BG_TOP, COLOR_BG_TOP, COLOR_BG_BOTTOM, COLOR_BG_BOTTOM, 1);
+  gfx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+  gfx.generateTexture(key, GAME_WIDTH, GAME_HEIGHT);
+}
+
+// One small tile, repeated via a TileSprite and drifted slowly (see
+// createBoardVisuals()) — far cheaper than animating individual star
+// GameObjects, same "one scrolling TileSprite" trick games/test-invaders
+// already uses for its own starfield. Mostly small white dots (matching
+// the logo's dominant star type) with occasional gold/purple/magenta
+// tints and a rare 4-point sparkle cross, echoing the logo's varied
+// accent stars without letting them dominate — kept sparse/low-alpha per
+// the "subtle enough not to compete with gameplay readability" brief.
+const STARFIELD_TILE_W = 240;
+const STARFIELD_TILE_H = 320;
+function drawSparkle(gfx, cx, cy, size, color, alpha) {
+  gfx.fillStyle(color, alpha);
+  gfx.fillRect(cx - 0.5, cy - size, 1, size * 2);
+  gfx.fillRect(cx - size, cy - 0.5, size * 2, 1);
+}
+function drawStarfieldTexture(gfx, key) {
+  gfx.clear();
+  const colors = [COLOR_STAR_WHITE, COLOR_STAR_WHITE, COLOR_STAR_WHITE, COLOR_STAR_GOLD, COLOR_STAR_PURPLE, COLOR_STAR_MAGENTA];
+  for (let i = 0; i < 55; i++) {
+    const x = Math.random() * STARFIELD_TILE_W;
+    const y = Math.random() * STARFIELD_TILE_H;
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const alpha = 0.3 + Math.random() * 0.5;
+    if (Math.random() < 0.08) {
+      drawSparkle(gfx, x, y, 3 + Math.random() * 2, color, alpha);
+    } else {
+      const size = Math.random() < 0.15 ? 2 : 1;
+      gfx.fillStyle(color, alpha);
+      gfx.fillRect(x, y, size, size);
+    }
+  }
+  gfx.generateTexture(key, STARFIELD_TILE_W, STARFIELD_TILE_H);
 }
 
 // --- Audio — plain Web Audio. The eat blip is still a synthesized
@@ -243,22 +407,37 @@ class MainScene extends Phaser.Scene {
 
   buildTextures() {
     const gfx = this.add.graphics();
-    drawSnakeHeadTexture(gfx, "snakeHead");
-    drawSnakeSegmentTexture(gfx, "snakeBody", COLOR_SNAKE_BODY);
-    drawSnakeSegmentTexture(gfx, "snakeBodyDark", COLOR_SNAKE_BODY_DARK);
+    drawSnakeSegmentTexture(gfx, "snakeHead", true);
+    drawSnakeSegmentTexture(gfx, "snakeBody", false);
     drawFoodTexture(gfx, "food");
+    drawFoodPulseGlowTexture(gfx, "foodPulseGlow");
+    drawBackgroundGradientTexture(gfx, "bgGradient");
+    drawStarfieldTexture(gfx, "starfield");
     gfx.destroy();
   }
 
+  // Dark navy gradient + a slowly-drifting starfield TileSprite (see
+  // drawStarfieldTexture's comment — one repeating tile, scrolled via
+  // tilePosition in update(), same cheap trick games/test-invaders uses)
+  // replace the old flat checkerboard. A faint grid is kept on top —
+  // subtle enough not to compete with the backdrop, but still enough
+  // structure to judge cell alignment during play.
   createBoardVisuals() {
+    this.add.image(GAME_WIDTH / 2, GAME_HEIGHT / 2, "bgGradient").setDepth(-20);
+
+    this.starTile = this.add
+      .tileSprite(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, "starfield")
+      .setDepth(-10);
+
     const gfx = this.add.graphics().setDepth(0);
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        gfx.fillStyle((r + c) % 2 === 0 ? COLOR_BG_A : COLOR_BG_B, 1);
-        gfx.fillRect(c * TILE, GRID_OFFSET_Y + r * TILE, TILE, TILE);
-      }
+    gfx.lineStyle(1, COLOR_BORDER, 0.22);
+    for (let c = 0; c <= GRID_COLS; c++) {
+      gfx.lineBetween(c * TILE, GRID_OFFSET_Y, c * TILE, GRID_OFFSET_Y + GRID_ROWS * TILE);
     }
-    gfx.lineStyle(2, COLOR_BORDER, 1);
+    for (let r = 0; r <= GRID_ROWS; r++) {
+      gfx.lineBetween(0, GRID_OFFSET_Y + r * TILE, GAME_WIDTH, GRID_OFFSET_Y + r * TILE);
+    }
+    gfx.lineStyle(2, COLOR_BORDER, 0.9);
     gfx.strokeRect(1, GRID_OFFSET_Y + 1, GAME_WIDTH - 2, GRID_ROWS * TILE - 2);
   }
 
@@ -335,9 +514,16 @@ class MainScene extends Phaser.Scene {
   }
 
   create() {
+    // Smooth round-start transition instead of a hard cut to the board.
+    this.cameras.main.fadeIn(400, 5, 6, 15);
+
     this.buildTextures();
     this.createBoardVisuals();
     this.createController();
+
+    // Sits just under the segment sprites (depth 5) and over the food
+    // (depth 3) — see drawSnakeConnectors()/renderSnake().
+    this.gConnectors = this.add.graphics().setDepth(4);
 
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keyW = this.input.keyboard.addKey("W");
@@ -345,22 +531,28 @@ class MainScene extends Phaser.Scene {
     this.keyS = this.input.keyboard.addKey("S");
     this.keyD = this.input.keyboard.addKey("D");
 
+    // Bold warm gold matching the logo's title typography, with a dark
+    // stroke plus a soft drop-shadow "glow" (setShadow) instead of the old
+    // plain green/flat-white HUD text.
     this.scoreText = this.add
       .text(14, 12, "SCORE 000000", {
         fontFamily: '"Courier New", monospace',
         fontSize: "22px",
         fontStyle: "bold",
-        color: "#7cff4d",
-        stroke: "#0c2e00",
+        color: "#ffd76b",
+        stroke: "#4a2e00",
         strokeThickness: 3,
       })
+      .setShadow(0, 0, "#ffcf4d", 6, false, true)
       .setDepth(21);
     this.lenText = this.add
       .text(GAME_WIDTH - 14, 12, "LEN 3", {
         fontFamily: '"Courier New", monospace',
         fontSize: "18px",
         fontStyle: "bold",
-        color: "#eafff0",
+        color: "#6fe6da",
+        stroke: "#0a2e2c",
+        strokeThickness: 3,
       })
       .setOrigin(1, 0)
       .setDepth(21);
@@ -398,11 +590,29 @@ class MainScene extends Phaser.Scene {
     } while (attempt < FOOD_SPAWN_MAX_ATTEMPTS && this.snake.some((s) => s.row === row && s.col === col));
 
     this.food = { row, col };
+    const px = tileToPixelX(col);
+    const py = tileToPixelY(row);
     if (!this.foodSprite) {
-      this.foodSprite = this.add.image(tileToPixelX(col), tileToPixelY(row), "food").setDepth(3);
+      // Glow sprite sits BEHIND the food (lower depth) and pulses its own
+      // scale+alpha independently of the food sprite's own scale tween —
+      // two overlapping pulses at slightly different rates read as a
+      // livelier "breathing" glow than either alone.
+      this.foodGlowSprite = this.add.image(px, py, "foodPulseGlow").setDepth(2).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({
+        targets: this.foodGlowSprite,
+        scale: { from: 0.75, to: 1.25 },
+        alpha: { from: 0.5, to: 1 },
+        duration: 620,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      });
+
+      this.foodSprite = this.add.image(px, py, "food").setDepth(3);
       this.tweens.add({ targets: this.foodSprite, scale: { from: 0.85, to: 1.15 }, duration: 450, yoyo: true, repeat: -1 });
     } else {
-      this.foodSprite.setPosition(tileToPixelX(col), tileToPixelY(row));
+      this.foodSprite.setPosition(px, py);
+      this.foodGlowSprite.setPosition(px, py);
     }
   }
 
@@ -451,6 +661,7 @@ class MainScene extends Phaser.Scene {
       this.foodEaten++;
       this.tickMs = difficultyTickMs(this.foodEaten);
       AudioSys.playEat();
+      this.pulseScoreText();
       this.spawnFood();
     } else {
       this.snake.pop();
@@ -459,6 +670,22 @@ class MainScene extends Phaser.Scene {
     this.renderSnake();
     this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
     this.lenText.setText("LEN " + this.snake.length);
+  }
+
+  // Small scale-pop on the score readout each time food is eaten — purely
+  // a feedback flourish, doesn't touch scoring itself. Restarts cleanly on
+  // back-to-back eats (killTweensOf before starting a new one) rather than
+  // letting overlapping tweens fight over the same scale property.
+  pulseScoreText() {
+    this.tweens.killTweensOf(this.scoreText);
+    this.scoreText.setScale(1);
+    this.tweens.add({
+      targets: this.scoreText,
+      scale: 1.28,
+      duration: 90,
+      yoyo: true,
+      ease: "Quad.easeOut",
+    });
   }
 
   // Syncs the sprite pool to the current snake array — small grid (at
@@ -482,12 +709,50 @@ class MainScene extends Phaser.Scene {
         sprite.setAngle(this.dir.x === 1 ? 0 : this.dir.x === -1 ? 180 : this.dir.y === 1 ? 90 : -90);
       } else {
         sprite.setAngle(0);
-        sprite.setTexture(i % 2 === 0 ? "snakeBodyDark" : "snakeBody");
+        sprite.setTexture("snakeBody");
       }
+    }
+
+    this.drawSnakeConnectors();
+  }
+
+  // Fills in the small notch the segments' rounded corners leave at every
+  // joint (see the CONNECTOR_RADIUS comment up top), so a straight run of
+  // segments reads as one continuous, tapered body instead of a chain of
+  // separate blocks. Purely cosmetic — sits under the segment sprites
+  // (depth 4 vs 5) and only bridges genuinely grid-adjacent neighbors,
+  // skipping the rare case where the snake wraps across an edge (those
+  // two segments are on opposite sides of the screen, nothing to bridge).
+  drawSnakeConnectors() {
+    this.gConnectors.clear();
+    this.gConnectors.fillStyle(COLOR_SNAKE_MID, 1);
+    for (let i = 0; i < this.snake.length - 1; i++) {
+      const a = this.snake[i];
+      const b = this.snake[i + 1];
+      const dc = b.col - a.col;
+      const dr = b.row - a.row;
+      if (Math.abs(dc) > 1 || Math.abs(dr) > 1) continue; // wraparound jump — not visually adjacent
+
+      const ax = tileToPixelX(a.col);
+      const ay = tileToPixelY(a.row);
+      const bx = tileToPixelX(b.col);
+      const by = tileToPixelY(b.row);
+      const midX = (ax + bx) / 2;
+      const midY = (ay + by) / 2;
+      const w = dc !== 0 ? TILE : TILE * 0.72;
+      const h = dr !== 0 ? TILE : TILE * 0.72;
+      this.gConnectors.fillRoundedRect(midX - w / 2, midY - h / 2, w, h, CONNECTOR_RADIUS);
     }
   }
 
   update(time, delta) {
+    // Slow ambient drift on the starfield backdrop — cheap (one
+    // TileSprite's tilePosition, no per-star updates) and kept running
+    // even after game over so the board doesn't go fully static behind
+    // the panel.
+    this.starTile.tilePositionY -= delta * 0.006;
+    this.starTile.tilePositionX += delta * 0.003;
+
     if (this.gameOver) return;
 
     this.readKeyboard();
@@ -508,10 +773,16 @@ class MainScene extends Phaser.Scene {
     AudioSys.stopMusic();
     AudioSys.playGameOver();
 
+    // Impact beat — camera shake + a quick red flash — before the panel
+    // fades in below. Both are built-in Phaser camera effects, no custom
+    // per-frame code needed.
+    this.cameras.main.shake(220, 0.01);
+    this.cameras.main.flash(160, 255, 90, 90);
+
     const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72);
     overlay.setDepth(30);
 
-    this.add
+    const titleText = this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 90, "GAME OVER", {
         fontFamily: '"Courier New", monospace',
         fontSize: "32px",
@@ -523,28 +794,29 @@ class MainScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(31);
 
-    this.add
+    const scoreLineText = this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 40, "SCORE " + String(this.score).padStart(6, "0"), {
         fontFamily: '"Courier New", monospace',
         fontSize: "24px",
         fontStyle: "bold",
-        color: "#7cff4d",
-        stroke: "#0c2e00",
+        color: "#ffd76b",
+        stroke: "#4a2e00",
         strokeThickness: 3,
       })
+      .setShadow(0, 0, "#ffcf4d", 6, false, true)
       .setOrigin(0.5)
       .setDepth(31);
 
-    const retryBtn = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, 260, 76, 0x7cff4d, 1);
-    retryBtn.setStrokeStyle(4, 0x0c2e00);
+    const retryBtn = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, 260, 76, 0xffd76b, 1);
+    retryBtn.setStrokeStyle(4, 0x4a2e00);
     retryBtn.setDepth(31);
     retryBtn.setInteractive({ useHandCursor: true });
 
-    this.add
+    const retryText = this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 60, "TAP TO RETRY", {
         fontFamily: '"Courier New", monospace',
         fontSize: "20px",
-        color: "#0c0d12",
+        color: "#241505",
         fontStyle: "bold",
       })
       .setOrigin(0.5)
@@ -553,6 +825,13 @@ class MainScene extends Phaser.Scene {
     retryBtn.on("pointerdown", () => {
       this.scene.restart();
     });
+
+    // Smooth fade-in for the whole game-over panel instead of popping in
+    // instantly — everything above is created at full alpha, dropped to 0,
+    // then tweened back up together right after the shake/flash beat.
+    const panel = [overlay, titleText, scoreLineText, retryBtn, retryText];
+    panel.forEach((o) => o.setAlpha(0));
+    this.tweens.add({ targets: panel, alpha: 1, duration: 320, delay: 120, ease: "Sine.easeOut" });
   }
 }
 
@@ -562,7 +841,11 @@ const config = {
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
   backgroundColor: "#05050a",
-  pixelArt: true,
+  // Was true — fine for the old flat-rect segments, but forces nearest-
+  // neighbor filtering on every texture, which made the new rounded/
+  // gradient/glow textures (see drawSnakeSegmentTexture etc.) look jagged
+  // instead of smooth. Off now so those render with normal antialiasing.
+  pixelArt: false,
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
