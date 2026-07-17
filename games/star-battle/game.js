@@ -41,7 +41,7 @@ const GAME_HEIGHT = 800;
 
 const CONFIG = {
   RUN_LENGTH: 90,          // hard cap, seconds
-  BOSS_SPAWN_TIME: 60,     // seconds into the run the boss appears
+  BOSS_SPAWN_TIME: 50,     // seconds into the run the boss appears — was 60, shortened per feedback
   SHIELD_MAX: 100,
 
   // Sector steering (hybrid of the two earlier attempts). Pure continuous
@@ -94,8 +94,16 @@ const CONFIG = {
   // genuinely different recording, not a pitch-shifted version of the
   // phase-1 sound) — see the laserBigPool below.
   PHASE2_BOLT_SPEED: 550,      // was sharing the green weapon's 900 — now genuinely slower
-  PHASE2_BOLT_WIDTH: 5.5,      // was 3.6, which still read as "a bit thicker" rather than "bigger"
-  PHASE2_BOLT_STREAK_LEN: 36,  // was 24
+  PHASE2_BOLT_WIDTH: 7.5,      // was 5.5, then 3.6 — bigger again now that fewer of them fire per burst
+  PHASE2_BOLT_STREAK_LEN: 46,  // was 36, then 24
+  // Fewer, bigger-reading shots per burst once the boss phase begins,
+  // instead of sharing the phase-1 weapon's BURST_SIZE/GAP/COOLDOWN —
+  // per feedback that the big-cannon sfx needed to play slower/heavier,
+  // which only reads cleanly if the shots themselves are spaced out more
+  // rather than overlapping every ~65ms like the phase-1 weapon.
+  PHASE2_BURST_SIZE: 3,
+  PHASE2_BURST_GAP_MS: 140,
+  PHASE2_BURST_COOLDOWN_MS: 620,
 
   // Trimmed further from the original tuning — playtesting found the
   // screen too busy even at the first cut, and fighters/rocks were
@@ -159,15 +167,6 @@ const CONFIG = {
   FIGHTER_RADIUS: 1.6,
   FIGHTER_HIT_MULT: 1.35,
   BOSS_RADIUS: 7,
-  BOSS_HULL_HIT_MULT: 1.15,
-  // The hull's hit-circle radius is capped here — its VISUAL size is
-  // deliberately unbounded (grows to fill the screen late in the fight),
-  // but letting the HIT-test radius grow unbounded too meant it could
-  // exceed the distance from where bolts spawn (fixed bottom corners) to
-  // the crosshair, swallowing every bolt right at its spawn point instead
-  // of letting it visibly travel toward the target. See its use in
-  // resolveBoltCollisions().
-  BOSS_HULL_HIT_RADIUS_CAP: 320,
   BOSS_WEAKPOINT_RADIUS: 1.0,  // was 0.8 — bigger, more unmistakable target
   // Was 1.4, then 2.4 — with the boss targetable much earlier (while
   // it's still relatively small/distant), the hit RADIUS at that range
@@ -250,6 +249,11 @@ const laserPool = Array.from({ length: LASER_POOL_SIZE }, () => {
 const laserBigPool = Array.from({ length: LASER_POOL_SIZE }, () => {
   const a = new Audio('../../assets/star-battle-laser-big.mp3');
   a.volume = 0.28;
+  // Slowed down per feedback — the raw file read as too quick/thin for a
+  // "big cannon" cue. Paired with fewer, further-apart phase-2 shots (see
+  // CONFIG.PHASE2_BURST_*) so a slower sound has room to play out instead
+  // of overlapping itself every ~65ms like the phase-1 weapon.
+  a.playbackRate = 0.72;
   return a;
 });
 let laserIdx = 0;
@@ -293,7 +297,7 @@ function playCrashCue() {
 // pass autoplay policy; see primeAudio()'s comment). Plain
 // HTMLAudioElement like every other real sound in this file.
 const hyperspaceSound = new Audio('../../assets/star-battle-hyperspace.mp3');
-hyperspaceSound.volume = 0.6;
+hyperspaceSound.volume = 0.95; // was 0.6 — too quiet against the warp visuals, per feedback
 function playHyperspaceSound() {
   if (muted) return;
   hyperspaceSound.currentTime = 0;
@@ -685,12 +689,15 @@ class MainScene extends Phaser.Scene {
     });
     playLaser(phase2);
 
+    const burstSize = phase2 ? CONFIG.PHASE2_BURST_SIZE : CONFIG.BURST_SIZE;
+    const burstGapMs = phase2 ? CONFIG.PHASE2_BURST_GAP_MS : CONFIG.BURST_GAP_MS;
+    const burstCooldownMs = phase2 ? CONFIG.PHASE2_BURST_COOLDOWN_MS : CONFIG.BURST_COOLDOWN_MS;
     this.fire.burstIndex++;
-    if (this.fire.burstIndex >= CONFIG.BURST_SIZE) {
+    if (this.fire.burstIndex >= burstSize) {
       this.fire.burstIndex = 0;
-      this.fire.cooldownUntil = now + CONFIG.BURST_COOLDOWN_MS;
+      this.fire.cooldownUntil = now + burstCooldownMs;
     } else {
-      this.fire.nextBoltTime = now + CONFIG.BURST_GAP_MS;
+      this.fire.nextBoltTime = now + burstGapMs;
     }
   }
 
@@ -898,49 +905,47 @@ class MainScene extends Phaser.Scene {
       if (b.dead) continue;
 
       if (this.boss && !this.bossKilled) {
+        // No hull hit-circle gating this anymore. The previous version
+        // only ever tested the weak point once a bolt was already inside
+        // a broad hit-circle centered on the boss's core — but that circle
+        // often reached well past the weak point's own offset position,
+        // so a correctly-aimed bolt would cross into it and immediately
+        // register as a "miss" (spawning a spark right there) before ever
+        // getting close to the reticle it was actually fired at. Visually
+        // that reads as the hull physically blocking the shot in front of
+        // the aim point. Bolts already render above the boss (depth 20 vs
+        // the boss's 10 — see the Graphics setup in create()), so the hull
+        // is purely a backdrop now for hit purposes too: a bolt only ever
+        // resolves against the weak point itself, so it always visibly
+        // travels all the way to — and converges on — wherever it was
+        // aimed.
         const bp = project(this.boss.x, this.boss.y, this.boss.z);
-        // Capped — unbounded, this can exceed the screen's own diagonal
-        // once the boss is close/huge late in the fight (its VISUAL size
-        // is deliberately unbounded, growing to fill the screen, but the
-        // HIT circle doesn't need to match that exactly). Bolts spawn at
-        // the fixed bottom corners and travel toward the crosshair; once
-        // hullRad got bigger than that spawn-to-crosshair distance, every
-        // bolt was landing "inside" the boss's hit-circle on essentially
-        // its first frame, dying right at/near its spawn point instead of
-        // visibly traveling toward the crosshair — read as bolts getting
-        // "blocked" and never converging on the reticle.
-        const hullRad = Math.min(CONFIG.BOSS_RADIUS * CONFIG.BOSS_HULL_HIT_MULT * bp.scale, CONFIG.BOSS_HULL_HIT_RADIUS_CAP);
-        if (dist2(b.x, b.y, bp.x, bp.y) < hullRad * hullRad) {
-          const wp = project(this.boss.x + this.boss.wx, this.boss.y + this.boss.wy, this.boss.z);
-          const wRad = Math.max(16, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
-          const targetable = this.boss.z <= CONFIG.BOSS_TARGETABLE_Z;
-          if (targetable && dist2(b.x, b.y, wp.x, wp.y) < wRad * wRad) {
-            b.dead = true; this.boss.hp--; this.score += CONFIG.SCORE_BOSS_HIT;
-            this.spawnBurst(wp.x, wp.y, 14, PALETTE, { speedMin: 120, speedMax: 340, lenMin: 10, lenMax: 30, lifeMax: 0.4 });
-            if (this.boss.hp <= 0) {
-              this.bossKilled = true; this.score += CONFIG.SCORE_BOSS_KILL_BONUS;
-              // Multi-stage explosion instead of one burst: an immediate
-              // hit, then a staggered chain of secondary blasts scattered
-              // across the hull, ending in one big finisher — "watch it
-              // explode" per feedback, not a single instant flash.
-              // bp/bossSize are captured now since the boss object stops
-              // being drawn/updated (bossKilled) from this frame on.
-              const bossSize = CONFIG.BOSS_RADIUS * bp.scale;
-              this.spawnBurst(bp.x, bp.y, 20, PALETTE, { speedMin: 150, speedMax: 420, lenMin: 12, lenMax: 40, lifeMax: 0.5 });
-              [120, 260, 400, 560, 720].forEach((delay) => {
-                setTimeout(() => {
-                  const ox = (Math.random() - 0.5) * bossSize * 1.4;
-                  const oy = (Math.random() - 0.5) * bossSize * 1.4;
-                  this.spawnBurst(bp.x + ox, bp.y + oy, 14, PALETTE, { speedMin: 80, speedMax: 260, lenMin: 8, lenMax: 26, lifeMax: 0.45 });
-                }, delay);
-              });
+        const wp = project(this.boss.x + this.boss.wx, this.boss.y + this.boss.wy, this.boss.z);
+        const wRad = Math.max(16, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
+        const targetable = this.boss.z <= CONFIG.BOSS_TARGETABLE_Z;
+        if (targetable && dist2(b.x, b.y, wp.x, wp.y) < wRad * wRad) {
+          b.dead = true; this.boss.hp--; this.score += CONFIG.SCORE_BOSS_HIT;
+          this.spawnBurst(wp.x, wp.y, 14, PALETTE, { speedMin: 120, speedMax: 340, lenMin: 10, lenMax: 30, lifeMax: 0.4 });
+          if (this.boss.hp <= 0) {
+            this.bossKilled = true; this.score += CONFIG.SCORE_BOSS_KILL_BONUS;
+            // Multi-stage explosion instead of one burst: an immediate
+            // hit, then a staggered chain of secondary blasts scattered
+            // across the hull, ending in one big finisher — "watch it
+            // explode" per feedback, not a single instant flash.
+            // bp/bossSize are captured now since the boss object stops
+            // being drawn/updated (bossKilled) from this frame on.
+            const bossSize = CONFIG.BOSS_RADIUS * bp.scale;
+            this.spawnBurst(bp.x, bp.y, 20, PALETTE, { speedMin: 150, speedMax: 420, lenMin: 12, lenMax: 40, lifeMax: 0.5 });
+            [120, 260, 400, 560, 720].forEach((delay) => {
               setTimeout(() => {
-                this.spawnBurst(bp.x, bp.y, 40, PALETTE, { speedMin: 180, speedMax: 520, lenMin: 16, lenMax: 50, lifeMax: 0.7 });
-              }, 880);
-            }
-          } else {
-            b.dead = true;
-            this.spawnBurst(b.x, b.y, 4, [COLORS.white], { speedMin: 40, speedMax: 100, lenMin: 4, lenMax: 10, lifeMax: 0.25 });
+                const ox = (Math.random() - 0.5) * bossSize * 1.4;
+                const oy = (Math.random() - 0.5) * bossSize * 1.4;
+                this.spawnBurst(bp.x + ox, bp.y + oy, 14, PALETTE, { speedMin: 80, speedMax: 260, lenMin: 8, lenMax: 26, lifeMax: 0.45 });
+              }, delay);
+            });
+            setTimeout(() => {
+              this.spawnBurst(bp.x, bp.y, 40, PALETTE, { speedMin: 180, speedMax: 520, lenMin: 16, lenMax: 50, lifeMax: 0.7 });
+            }, 880);
           }
         }
       }
