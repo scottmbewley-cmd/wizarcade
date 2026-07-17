@@ -105,6 +105,37 @@ function saveSpeedMultiplier(value) {
   }
 }
 
+// --- Mute preference (persisted per device, own key so it never collides
+// with the speed-multiplier or layout keys above) ---
+const MUTE_STORAGE_KEY = "wizarcade-test-invaders-muted";
+
+function loadMuted() {
+  try {
+    const raw = localStorage.getItem(MUTE_STORAGE_KEY);
+    if (raw === null) return true; // default: muted on first-ever load
+    return raw === "true";
+  } catch (e) {
+    return true;
+  }
+}
+
+function saveMuted(value) {
+  try {
+    localStorage.setItem(MUTE_STORAGE_KEY, String(value));
+  } catch (e) {
+    // Persistence is a nice-to-have, not required for play.
+  }
+}
+
+// Whether the browser has granted a genuine user-gesture yet this page
+// session — module-level (not a Scene property) on purpose: Phaser's own
+// AudioContext/SoundManager live at the Game level and stay unlocked across
+// a scene.restart() (which reuses the same Scene instance but re-runs its
+// lifecycle), so once this flips true on a fresh page load it should stay
+// true through every subsequent retry, letting music resume immediately on
+// restart rather than waiting for the steering zone to be touched again.
+let audioGestureReceived = false;
+
 // --- Classic formation constants ---
 const FORMATION_ROWS = 5;
 const FORMATION_COLS = 8;
@@ -266,6 +297,15 @@ class MainScene extends Phaser.Scene {
     super("main");
   }
 
+  // Only the small one-shot laser sfx (~49KB) loads here, blocking nothing
+  // meaningful before first paint. The much larger background music track
+  // (~2.4MB) is deliberately NOT loaded here — see loadMusicLazily(),
+  // kicked off from the end of create() instead, so it never delays the
+  // game becoming visible/interactive on a slow connection.
+  preload() {
+    this.load.audio("laserfire", "audio/laserfire.mp3");
+  }
+
   buildTextures() {
     const gfx = this.add.graphics();
 
@@ -368,7 +408,108 @@ class MainScene extends Phaser.Scene {
         this.pointerX = data.x;
         this.dismissHint();
       }
+      // The player's first touch on the steering zone is the natural first
+      // real user gesture in this game (there's no separate tap-to-start
+      // screen) — browsers require exactly that kind of gesture before
+      // audio is allowed to play, so this is where music playback unlocks.
+      if (data.active) this.handleFirstInteraction();
     });
+  }
+
+  // Browser autoplay policy: audio can only start after a genuine user
+  // gesture. audioGestureReceived is module-level (see its own comment) so
+  // this only actually matters once per page session — on a later retry
+  // within the same session it's already true, and tryStartMusic() (called
+  // from create()) just starts music immediately without waiting again.
+  handleFirstInteraction() {
+    if (audioGestureReceived) return;
+    audioGestureReceived = true;
+    this.musicWantsPlay = true;
+    this.tryStartMusic();
+  }
+
+  // See preload()'s comment for why this is split from the laser sfx's
+  // normal load — kicked off from the end of create(), after the game is
+  // already visible and playable, so the ~2.4MB file never delays first
+  // paint. Guards against re-fetching on a scene.restart(): Phaser's audio
+  // cache is Game-level and already has it after the first run.
+  loadMusicLazily() {
+    if (this.cache.audio.exists("music")) {
+      this.onMusicLoaded();
+      return;
+    }
+    this.load.audio("music", "audio/star-invaders-music.mp3");
+    this.load.once(Phaser.Loader.Events.COMPLETE, () => this.onMusicLoaded());
+    this.load.start();
+  }
+
+  onMusicLoaded() {
+    this.musicSound = this.sound.add("music", { loop: true, volume: 0.55 });
+    this.tryStartMusic();
+  }
+
+  // Only actually starts playback once BOTH conditions are met: a user
+  // gesture has unlocked audio, AND the (possibly still-loading) music
+  // asset is ready. Whichever of handleFirstInteraction()/onMusicLoaded()
+  // happens second is what actually starts it.
+  tryStartMusic() {
+    if (!this.musicWantsPlay || this.gameOver || !this.musicSound) return;
+    if (!this.musicSound.isPlaying) this.musicSound.play();
+  }
+
+  formatMuteLabel() {
+    return this.muted ? "MUTED" : "SOUND ON";
+  }
+
+  updateMuteVisuals() {
+    const color = this.muted ? "#ff8f8f" : "#33ff66";
+    this.muteText.setText(this.formatMuteLabel()).setColor(color);
+    this.muteBg.setStrokeStyle(1, this.muted ? 0xff5d5d : 0x33ff66, 0.4);
+  }
+
+  toggleMute() {
+    this.muted = !this.muted;
+    this.sound.mute = this.muted; // one switch for both music and sfx
+    saveMuted(this.muted);
+    this.updateMuteVisuals();
+  }
+
+  // Small top-right mute toggle, flush against createSpeedControl()'s own
+  // panel with a fixed gap between them — recomputes that panel's left
+  // edge from the same layout numbers rather than hardcoding it, so it
+  // stays correctly positioned if that control's own sizing ever changes.
+  createMuteControl() {
+    const y = 23;
+    const btnSize = 22;
+    const speedPlusX = GAME_WIDTH - 10 - btnSize / 2;
+    const speedReadoutRightX = speedPlusX - btnSize / 2 - 6;
+    const speedMinusX = speedReadoutRightX - 86 - 6 - btnSize / 2;
+    const speedPanelLeft = speedMinusX - btnSize / 2 - 6;
+
+    const gap = 12;
+    const panelWidth = 88;
+    const panelRight = speedPanelLeft - gap;
+    const panelLeft = panelRight - panelWidth;
+    const cx = (panelLeft + panelRight) / 2;
+
+    this.muteBg = this.add
+      .rectangle(cx, y, panelWidth, 30, 0x10121c, 0.55)
+      .setStrokeStyle(1, 0x33ff66, 0.4)
+      .setDepth(29)
+      .setInteractive({ useHandCursor: true });
+
+    this.muteText = this.add
+      .text(cx, y, this.formatMuteLabel(), {
+        fontFamily: '"Courier New", monospace',
+        fontSize: "13px",
+        fontStyle: "bold",
+        color: "#33ff66",
+      })
+      .setOrigin(0.5)
+      .setDepth(31);
+
+    this.muteBg.on("pointerdown", () => this.toggleMute());
+    this.updateMuteVisuals();
   }
 
   // Small top-right speed control: "-" / readout / "+". Persists the chosen
@@ -516,6 +657,29 @@ class MainScene extends Phaser.Scene {
     this.pointerX = GAME_WIDTH / 2;
     this.speedMultiplier = loadSpeedMultiplier();
 
+    // Audio — same defensive restart-guard pattern as the player/controller
+    // below: this.sound (Phaser's SoundManager) is Game-level, not torn down
+    // by scene.restart(), so any Sound instance from a previous run would
+    // otherwise keep playing/stacking alongside a freshly-created one on
+    // every retry.
+    if (this.musicSound) {
+      this.musicSound.stop();
+      this.musicSound.destroy();
+      this.musicSound = null;
+    }
+    if (this.laserSound) {
+      this.laserSound.destroy();
+      this.laserSound = null;
+    }
+    this.muted = loadMuted();
+    this.sound.mute = this.muted;
+    this.laserSound = this.sound.add("laserfire", { volume: 0.5 });
+    // Carries across a retry within the same page session: if the browser
+    // already unlocked audio earlier (see the steering-zone/retry-button
+    // hooks below), music should resume immediately on restart instead of
+    // waiting for another "first touch."
+    this.musicWantsPlay = audioGestureReceived;
+
     // Player — guard mirrors createController()'s own duplicate-guard
     // further down in this method: belt-and-suspenders insurance that a
     // stray leftover reference (e.g. from a scene restart) can never leave
@@ -565,10 +729,16 @@ class MainScene extends Phaser.Scene {
       .setDepth(21);
 
     this.createSpeedControl();
+    this.createMuteControl();
 
     this.showControlHint();
 
     this.spawnWave();
+
+    // Kicked off last, once the rest of create() is already done — this is
+    // the "in the background once play has started" half of the fast-load
+    // strategy for the big music file (see preload()'s comment).
+    this.loadMusicLazily();
 
     this.lastFireTime = 0;
     this.fireTickTimer = this.time.addEvent({
@@ -742,6 +912,8 @@ class MainScene extends Phaser.Scene {
     // See note in alienFireTick(): add to group first, THEN set velocity.
     this.playerBullets.add(bullet);
     bullet.body.setVelocityY(-PLAYER_BULLET_SPEED * this.speedMultiplier);
+
+    this.laserSound.play();
   }
 
   update(time, delta) {
@@ -792,6 +964,8 @@ class MainScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.gameOver = true;
 
+    if (this.musicSound) this.musicSound.stop();
+
     this.fireTickTimer.remove();
     this.physics.pause();
 
@@ -840,6 +1014,10 @@ class MainScene extends Phaser.Scene {
       .setDepth(12);
 
     retryBtn.on("pointerdown", () => {
+      // Secondary unlock point, in case the player never actually touched
+      // the steering zone before dying (autoFire runs unconditionally, so
+      // that's possible) — this click is just as genuine a user gesture.
+      this.handleFirstInteraction();
       this.scene.restart();
     });
   }
