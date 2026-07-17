@@ -160,6 +160,14 @@ const CONFIG = {
   FIGHTER_HIT_MULT: 1.35,
   BOSS_RADIUS: 7,
   BOSS_HULL_HIT_MULT: 1.15,
+  // The hull's hit-circle radius is capped here — its VISUAL size is
+  // deliberately unbounded (grows to fill the screen late in the fight),
+  // but letting the HIT-test radius grow unbounded too meant it could
+  // exceed the distance from where bolts spawn (fixed bottom corners) to
+  // the crosshair, swallowing every bolt right at its spawn point instead
+  // of letting it visibly travel toward the target. See its use in
+  // resolveBoltCollisions().
+  BOSS_HULL_HIT_RADIUS_CAP: 320,
   BOSS_WEAKPOINT_RADIUS: 1.0,  // was 0.8 — bigger, more unmistakable target
   // Was 1.4, then 2.4 — with the boss targetable much earlier (while
   // it's still relatively small/distant), the hit RADIUS at that range
@@ -277,53 +285,18 @@ function playCrashCue() {
   });
 }
 
-// No "whoosh" asset exists either, and unlike the crash cue this one
-// can't be approximated by re-pitching the laser sfx — a filtered noise
-// sweep is the standard way to synthesize this specific sound, so this
-// is genuine (small, one-off) synthesis rather than reusing a real file.
-// A lazy, page-lifetime AudioContext separate from Phaser's own (which is
-// fully disabled — see audio:{noAudio:true} in the Phaser config at the
-// bottom of this file) and separate from the plain HTMLAudioElements used
-// everywhere else in this file.
-let sfxCtx = null;
-function getSfxCtx() {
-  if (!sfxCtx) {
-    try { sfxCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-    catch (e) { return null; }
-  }
-  if (sfxCtx.state === 'suspended') sfxCtx.resume().catch(() => {});
-  return sfxCtx;
-}
-function playWhoosh() {
+// Real hyperspace-jump cue now (assets/star-battle-hyperspace.mp3, ~7s —
+// close to HYPERSPACE_DURATION_MS's 8s) — replaces the synthesized
+// filtered-noise whoosh from the previous pass, which turned out to be
+// silent in practice (its AudioContext was created too late to reliably
+// pass autoplay policy; see primeAudio()'s comment). Plain
+// HTMLAudioElement like every other real sound in this file.
+const hyperspaceSound = new Audio('../../assets/star-battle-hyperspace.mp3');
+hyperspaceSound.volume = 0.6;
+function playHyperspaceSound() {
   if (muted) return;
-  const ctx = getSfxCtx();
-  if (!ctx) return;
-
-  const dur = 1.4;
-  const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1; // white noise
-
-  const noise = ctx.createBufferSource();
-  noise.buffer = buffer;
-
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.Q.value = 0.8;
-  const t0 = ctx.currentTime;
-  filter.frequency.setValueAtTime(200, t0);
-  filter.frequency.linearRampToValueAtTime(2200, t0 + dur * 0.45); // sweep up...
-  filter.frequency.linearRampToValueAtTime(120, t0 + dur);         // ...then down
-
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0, t0);
-  gain.gain.linearRampToValueAtTime(0.5, t0 + dur * 0.15);
-  gain.gain.linearRampToValueAtTime(0.35, t0 + dur * 0.6);
-  gain.gain.linearRampToValueAtTime(0, t0 + dur);
-
-  noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
-  noise.start(t0);
-  noise.stop(t0 + dur + 0.05);
+  hyperspaceSound.currentTime = 0;
+  hyperspaceSound.play().catch(() => {});
 }
 
 // iOS Safari specific — see Munch Man's unlockIOSMediaSession() for the
@@ -355,14 +328,11 @@ function primeAudio() {
   laserBigPool.forEach((a) => {
     a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
   });
-
-  // The whoosh's AudioContext (see getSfxCtx()/playWhoosh()) needs to be
-  // both CREATED and RESUMED here, synchronously in the real click
-  // gesture — not lazily on its first actual use ~60s into a run, by
-  // which point there's no gesture on the call stack for the browser's
-  // autoplay policy to key off, and it can end up silently never
-  // producing sound at all.
-  getSfxCtx();
+  // Same priming as the laser pools above — hyperspaceSound's first real
+  // play() happens ~60s into a run, well outside this click gesture, so
+  // it needs this same play-then-pause-rewind unlock now or iOS can
+  // block it later the same way the laser pools would without this.
+  hyperspaceSound.play().then(() => { hyperspaceSound.pause(); hyperspaceSound.currentTime = 0; }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------
@@ -795,7 +765,7 @@ class MainScene extends Phaser.Scene {
       // Everything else on screen is wiped for a clean, dedicated beat.
       this.hyperspaceUntil = now + CONFIG.HYPERSPACE_DURATION_MS;
       this.rocks = []; this.enemies = []; this.bolts = []; this.particles = [];
-      playWhoosh();
+      playHyperspaceSound();
     }
 
     if (!inHyperspace) {
@@ -906,7 +876,17 @@ class MainScene extends Phaser.Scene {
 
       if (this.boss && !this.bossKilled) {
         const bp = project(this.boss.x, this.boss.y, this.boss.z);
-        const hullRad = CONFIG.BOSS_RADIUS * CONFIG.BOSS_HULL_HIT_MULT * bp.scale;
+        // Capped — unbounded, this can exceed the screen's own diagonal
+        // once the boss is close/huge late in the fight (its VISUAL size
+        // is deliberately unbounded, growing to fill the screen, but the
+        // HIT circle doesn't need to match that exactly). Bolts spawn at
+        // the fixed bottom corners and travel toward the crosshair; once
+        // hullRad got bigger than that spawn-to-crosshair distance, every
+        // bolt was landing "inside" the boss's hit-circle on essentially
+        // its first frame, dying right at/near its spawn point instead of
+        // visibly traveling toward the crosshair — read as bolts getting
+        // "blocked" and never converging on the reticle.
+        const hullRad = Math.min(CONFIG.BOSS_RADIUS * CONFIG.BOSS_HULL_HIT_MULT * bp.scale, CONFIG.BOSS_HULL_HIT_RADIUS_CAP);
         if (dist2(b.x, b.y, bp.x, bp.y) < hullRad * hullRad) {
           const wp = project(this.boss.x + this.boss.wx, this.boss.y + this.boss.wy, this.boss.z);
           const wRad = Math.max(16, CONFIG.BOSS_WEAKPOINT_RADIUS * CONFIG.BOSS_WEAKPOINT_HIT_MULT * bp.scale);
