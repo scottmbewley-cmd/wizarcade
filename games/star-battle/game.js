@@ -87,6 +87,15 @@ const CONFIG = {
   BURST_COOLDOWN_MS: 480,  // pause after a burst before the next one starts
   BOLT_SPEED: 900,         // px/sec
 
+  // "Phase 2" weapon — every bolt fired from the moment the hyperspace
+  // jump ends onward is visually and audibly distinct (blue, bigger,
+  // deeper-pitched) from the green weapon used before it, per feedback.
+  // Same underlying laser sfx file, just played at a different
+  // playbackRate — there's no separate audio asset for this.
+  PHASE2_BOLT_WIDTH: 3.6,   // was a flat 2.4 for every bolt before this
+  PHASE2_BOLT_STREAK_LEN: 24, // was a flat 16
+  PHASE2_LASER_PITCH: 0.72,   // playbackRate — lower = deeper/heavier "bigger blast" feel
+
   // Trimmed further from the original tuning — playtesting found the
   // screen too busy even at the first cut, and fighters/rocks were
   // spawning close enough to already read as "appearing" at a noticeable
@@ -111,18 +120,23 @@ const CONFIG = {
 
   BOSS_Z_START: 42,
   BOSS_Z_END: 1.35,
-  BOSS_HP: 7,
+  BOSS_HP: 5,  // was 7 — easier fight per feedback
   BOSS_WEAKPOINT_DRIFT_MIN_MS: 2600,
   BOSS_WEAKPOINT_DRIFT_MAX_MS: 4400,
   BOSS_TARGETABLE_Z: 16, // weak point only does damage once boss.z closes inside this
 
   // Hyperspace jump into the boss encounter, right when it triggers at
-  // BOSS_SPAWN_TIME: a warp-streak starfield transition (with its own
-  // accelerate/cruise/decelerate arc — see hyperspaceIntensity()) leading
-  // straight into the boss reveal. Purely a visual overlay — doesn't
-  // pause gameplay underneath it. Doubled from the first pass (was 1100)
-  // per feedback, plus the accel/decel shaping.
-  HYPERSPACE_DURATION_MS: 2200,
+  // BOSS_SPAWN_TIME: an 8-second warp-streak starfield transition (its
+  // own accelerate/cruise/decelerate arc — see hyperspaceIntensity()),
+  // during which EVERYTHING else pauses and is cleared off screen —
+  // firing, enemy/rock spawning and movement, existing bolts/particles —
+  // leaving only the star tunnel visible, per feedback that it needed to
+  // be a real dedicated beat rather than a quick overlay. The boss's own
+  // z-closing-distance formula is the one exception: it keeps running off
+  // elapsed run time underneath the pause (not frozen) specifically so
+  // there's no sudden jump/discontinuity in how close it is the instant
+  // the jump ends and it's drawn again.
+  HYPERSPACE_DURATION_MS: 8000,
 
   // World-space object radii — screen size/hit-radius is always radius *
   // (FOCAL / z), the same formula used for positions, so these stay in
@@ -209,11 +223,14 @@ const laserPool = Array.from({ length: LASER_POOL_SIZE }, () => {
 });
 let laserIdx = 0;
 let muted = false;
-function playLaser() {
+// phase2 (bool): plays the same file at a lower pitch for the deeper,
+// "bigger blast" post-hyperspace weapon — see PHASE2_LASER_PITCH.
+function playLaser(phase2) {
   if (muted) return;
   const a = laserPool[laserIdx];
   laserIdx = (laserIdx + 1) % LASER_POOL_SIZE;
   a.currentTime = 0;
+  a.playbackRate = phase2 ? CONFIG.PHASE2_LASER_PITCH : 1;
   a.play().catch(() => {});
 }
 
@@ -230,6 +247,55 @@ function playCrashCue() {
       a.play().catch(() => {});
     }, delay);
   });
+}
+
+// No "whoosh" asset exists either, and unlike the crash cue this one
+// can't be approximated by re-pitching the laser sfx — a filtered noise
+// sweep is the standard way to synthesize this specific sound, so this
+// is genuine (small, one-off) synthesis rather than reusing a real file.
+// A lazy, page-lifetime AudioContext separate from Phaser's own (which is
+// fully disabled — see audio:{noAudio:true} in the Phaser config at the
+// bottom of this file) and separate from the plain HTMLAudioElements used
+// everywhere else in this file.
+let sfxCtx = null;
+function getSfxCtx() {
+  if (!sfxCtx) {
+    try { sfxCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch (e) { return null; }
+  }
+  if (sfxCtx.state === 'suspended') sfxCtx.resume().catch(() => {});
+  return sfxCtx;
+}
+function playWhoosh() {
+  if (muted) return;
+  const ctx = getSfxCtx();
+  if (!ctx) return;
+
+  const dur = 1.4;
+  const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1; // white noise
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 0.8;
+  const t0 = ctx.currentTime;
+  filter.frequency.setValueAtTime(200, t0);
+  filter.frequency.linearRampToValueAtTime(2200, t0 + dur * 0.45); // sweep up...
+  filter.frequency.linearRampToValueAtTime(120, t0 + dur);         // ...then down
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(0.5, t0 + dur * 0.15);
+  gain.gain.linearRampToValueAtTime(0.35, t0 + dur * 0.6);
+  gain.gain.linearRampToValueAtTime(0, t0 + dur);
+
+  noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+  noise.start(t0);
+  noise.stop(t0 + dur + 0.05);
 }
 
 // iOS Safari specific — see Munch Man's unlockIOSMediaSession() for the
@@ -570,6 +636,12 @@ class MainScene extends Phaser.Scene {
     const origin = (this.fire.corner % 2 === 0) ? leftCorner : rightCorner;
     this.fire.corner++;
 
+    // updateFire() is never called while inHyperspace (see stepGameplay),
+    // so if the boss has already spawned by the time this runs at all,
+    // the jump has necessarily already finished — no separate "did the
+    // jump just end" flag needed to know this is the phase-2 weapon.
+    const phase2 = this.bossSpawned;
+
     const dx = this.crosshair.x - origin.x, dy = this.crosshair.y - origin.y;
     const dist = Math.max(1, Math.hypot(dx, dy));
     this.bolts.push({
@@ -577,8 +649,9 @@ class MainScene extends Phaser.Scene {
       dirX: dx / dist, dirY: dy / dist,
       traveled: 0,
       maxDist: dist + GAME_WIDTH + GAME_HEIGHT,
+      phase2,
     });
-    playLaser();
+    playLaser(phase2);
 
     this.fire.burstIndex++;
     if (this.fire.burstIndex >= CONFIG.BURST_SIZE) {
@@ -649,11 +722,22 @@ class MainScene extends Phaser.Scene {
     this.crosshair.x += (this.targetX - this.crosshair.x) * ease;
     this.crosshair.y += (this.targetY - this.crosshair.y) * ease;
 
-    this.updateFire(now);
+    // While the hyperspace jump is playing (see the boss-trigger block
+    // below): no firing, no enemy spawning/movement, existing bolts and
+    // particles frozen — only the starfield tunnel is visible or active.
+    // The one deliberate exception is the boss's own z-progress block
+    // further down, which keeps running off elapsed run time regardless,
+    // so there's no sudden jump the instant the tunnel ends and it's
+    // drawn again.
+    const inHyperspace = now < this.hyperspaceUntil;
 
-    if (now >= this.nextEnemyAt && this.enemies.length < CONFIG.ENEMY_MAX_ALIVE) {
-      this.spawnEnemy();
-      this.nextEnemyAt = now + rand(CONFIG.ENEMY_SPAWN_MIN_MS, CONFIG.ENEMY_SPAWN_MAX_MS);
+    if (!inHyperspace) {
+      this.updateFire(now);
+
+      if (now >= this.nextEnemyAt && this.enemies.length < CONFIG.ENEMY_MAX_ALIVE) {
+        this.spawnEnemy();
+        this.nextEnemyAt = now + rand(CONFIG.ENEMY_SPAWN_MIN_MS, CONFIG.ENEMY_SPAWN_MAX_MS);
+      }
     }
     // Rocks stop spawning entirely once the boss phase begins (see the
     // hyperspace-jump block below, which also clears any still in flight)
@@ -669,49 +753,55 @@ class MainScene extends Phaser.Scene {
       // drawStarfield()) leading into the reveal of the boss itself — a
       // huge wireframe world closing in with the same z-projection
       // system as everything else, not a separate decorative backdrop.
+      // Everything else on screen is wiped for a clean, dedicated beat.
       this.hyperspaceUntil = now + CONFIG.HYPERSPACE_DURATION_MS;
-      this.rocks = [];
+      this.rocks = []; this.enemies = []; this.bolts = []; this.particles = [];
+      playWhoosh();
     }
 
-    for (const e of this.enemies) {
-      e.age += dt;
-      // Continuous slow approach for the whole time it's alive (not an
-      // early ease-in to a near "combat range" followed by holding
-      // there) — spawning far out AND closing gradually the entire
-      // lifespan is what actually reads as "growing bigger slowly" per
-      // the perspective system, rather than jumping to a noticeable size
-      // right after spawn. Floors out at ENEMY_Z_FLOOR so it still ends
-      // up close enough to be a real target if it survives long enough;
-      // many will simply peel off again (below) before ever reaching it.
-      if (e.age <= e.lifespan) {
-        if (e.z > CONFIG.ENEMY_Z_FLOOR) e.z = Math.max(CONFIG.ENEMY_Z_FLOOR, e.z - CONFIG.ENEMY_Z_APPROACH_SPEED * dt);
-      } else {
-        e.z += dt * 8;
+    if (!inHyperspace) {
+      for (const e of this.enemies) {
+        e.age += dt;
+        // Continuous slow approach for the whole time it's alive (not an
+        // early ease-in to a near "combat range" followed by holding
+        // there) — spawning far out AND closing gradually the entire
+        // lifespan is what actually reads as "growing bigger slowly" per
+        // the perspective system, rather than jumping to a noticeable
+        // size right after spawn. Floors out at ENEMY_Z_FLOOR so it
+        // still ends up close enough to be a real target if it survives
+        // long enough; many will simply peel off again (below) before
+        // ever reaching it.
+        if (e.age <= e.lifespan) {
+          if (e.z > CONFIG.ENEMY_Z_FLOOR) e.z = Math.max(CONFIG.ENEMY_Z_FLOOR, e.z - CONFIG.ENEMY_Z_APPROACH_SPEED * dt);
+        } else {
+          e.z += dt * 8;
+        }
+        const t = now / 1000;
+        const nx = e.x + Math.sin(t * e.freqX + e.phase) * e.ampX * dt * 6;
+        const ny = e.y + Math.sin(t * e.freqY + e.phase * 1.7) * e.ampY * dt * 6;
+        e.lastX = e.x; e.lastY = e.y;
+        e.x = nx; e.y = ny;
+        e.angle = Math.atan2(e.y - e.lastY, e.x - e.lastX);
+
+        if (e.age > e.lifespan && e.z > e.baseZ * 1.6) e.dead = true;
       }
-      const t = now / 1000;
-      const nx = e.x + Math.sin(t * e.freqX + e.phase) * e.ampX * dt * 6;
-      const ny = e.y + Math.sin(t * e.freqY + e.phase * 1.7) * e.ampY * dt * 6;
-      e.lastX = e.x; e.lastY = e.y;
-      e.x = nx; e.y = ny;
-      e.angle = Math.atan2(e.y - e.lastY, e.x - e.lastX);
+      this.enemies = this.enemies.filter((e) => !e.dead);
 
-      if (e.age > e.lifespan && e.z > e.baseZ * 1.6) e.dead = true;
-    }
-    this.enemies = this.enemies.filter((e) => !e.dead);
-
-    for (const r of this.rocks) {
-      const closeness = (CONFIG.ROCK_Z_START - r.z) / CONFIG.ROCK_Z_START;
-      r.z -= (CONFIG.ROCK_Z_SPEED + closeness * 2) * dt;
-      r.spin += r.spinSpeed * dt;
-      if (r.z <= 1.1) {
-        r.dead = true;
-        this.damageShield(CONFIG.SHIELD_DAMAGE_ROCK);
-        const p = project(r.x, r.y, Math.max(r.z, 0.6));
-        this.spawnBurst(p.x, p.y, 6, [COLORS.red, COLORS.white], { speedMin: 60, speedMax: 140 });
+      for (const r of this.rocks) {
+        const closeness = (CONFIG.ROCK_Z_START - r.z) / CONFIG.ROCK_Z_START;
+        r.z -= (CONFIG.ROCK_Z_SPEED + closeness * 2) * dt;
+        r.spin += r.spinSpeed * dt;
+        if (r.z <= 1.1) {
+          r.dead = true;
+          this.damageShield(CONFIG.SHIELD_DAMAGE_ROCK);
+          const p = project(r.x, r.y, Math.max(r.z, 0.6));
+          this.spawnBurst(p.x, p.y, 6, [COLORS.red, COLORS.white], { speedMin: 60, speedMax: 140 });
+        }
       }
+      this.rocks = this.rocks.filter((r) => !r.dead);
     }
-    this.rocks = this.rocks.filter((r) => !r.dead);
 
+    // Always runs, hyperspace or not — see the comment above inHyperspace.
     if (this.boss && !this.bossKilled) {
       const elapsed = Math.min(this.runTime - CONFIG.BOSS_SPAWN_TIME, CONFIG.RUN_LENGTH - CONFIG.BOSS_SPAWN_TIME);
       const progress = Math.max(0, elapsed / (CONFIG.RUN_LENGTH - CONFIG.BOSS_SPAWN_TIME));
@@ -722,21 +812,23 @@ class MainScene extends Phaser.Scene {
       if (now >= this.boss.driftAt) this.rerollWeakPoint();
     }
 
-    for (const b of this.bolts) {
-      const step = CONFIG.BOLT_SPEED * dt;
-      b.x += b.dirX * step; b.y += b.dirY * step;
-      b.traveled += step;
-      if (b.traveled >= b.maxDist || b.x < -50 || b.x > GAME_WIDTH + 50 || b.y < -50 || b.y > GAME_HEIGHT + 50) b.dead = true;
-    }
-    this.resolveBoltCollisions();
-    this.bolts = this.bolts.filter((b) => !b.dead);
+    if (!inHyperspace) {
+      for (const b of this.bolts) {
+        const step = CONFIG.BOLT_SPEED * dt;
+        b.x += b.dirX * step; b.y += b.dirY * step;
+        b.traveled += step;
+        if (b.traveled >= b.maxDist || b.x < -50 || b.x > GAME_WIDTH + 50 || b.y < -50 || b.y > GAME_HEIGHT + 50) b.dead = true;
+      }
+      this.resolveBoltCollisions();
+      this.bolts = this.bolts.filter((b) => !b.dead);
 
-    for (const p of this.particles) {
-      p.x += p.vx * dt; p.y += p.vy * dt;
-      p.vx *= 0.94; p.vy *= 0.94;
-      p.life -= dt;
+      for (const p of this.particles) {
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        p.vx *= 0.94; p.vy *= 0.94;
+        p.life -= dt;
+      }
+      this.particles = this.particles.filter((p) => p.life > 0);
     }
-    this.particles = this.particles.filter((p) => p.life > 0);
 
     if (this.shield <= 0) this.endRun('shot_down');
   }
@@ -785,7 +877,24 @@ class MainScene extends Phaser.Scene {
             this.spawnBurst(wp.x, wp.y, 14, PALETTE, { speedMin: 120, speedMax: 340, lenMin: 10, lenMax: 30, lifeMax: 0.4 });
             if (this.boss.hp <= 0) {
               this.bossKilled = true; this.score += CONFIG.SCORE_BOSS_KILL_BONUS;
-              this.spawnBurst(bp.x, bp.y, 32, PALETTE, { speedMin: 150, speedMax: 480, lenMin: 14, lenMax: 46, lifeMax: 0.6 });
+              // Multi-stage explosion instead of one burst: an immediate
+              // hit, then a staggered chain of secondary blasts scattered
+              // across the hull, ending in one big finisher — "watch it
+              // explode" per feedback, not a single instant flash.
+              // bp/bossSize are captured now since the boss object stops
+              // being drawn/updated (bossKilled) from this frame on.
+              const bossSize = CONFIG.BOSS_RADIUS * bp.scale;
+              this.spawnBurst(bp.x, bp.y, 20, PALETTE, { speedMin: 150, speedMax: 420, lenMin: 12, lenMax: 40, lifeMax: 0.5 });
+              [120, 260, 400, 560, 720].forEach((delay) => {
+                setTimeout(() => {
+                  const ox = (Math.random() - 0.5) * bossSize * 1.4;
+                  const oy = (Math.random() - 0.5) * bossSize * 1.4;
+                  this.spawnBurst(bp.x + ox, bp.y + oy, 14, PALETTE, { speedMin: 80, speedMax: 260, lenMin: 8, lenMax: 26, lifeMax: 0.45 });
+                }, delay);
+              });
+              setTimeout(() => {
+                this.spawnBurst(bp.x, bp.y, 40, PALETTE, { speedMin: 180, speedMax: 520, lenMin: 16, lenMax: 50, lifeMax: 0.7 });
+              }, 880);
             }
           } else {
             b.dead = true;
@@ -805,7 +914,11 @@ class MainScene extends Phaser.Scene {
 
     this.drawStarfield();
 
-    if (this.state === 'playing') {
+    // Nothing else renders during the hyperspace jump — only the star
+    // tunnel — per feedback that it needed to be a clean, dedicated beat
+    // rather than an overlay on top of visible gameplay.
+    const inHyperspace = performance.now() < this.hyperspaceUntil;
+    if (this.state === 'playing' && !inHyperspace) {
       this.rocks.forEach((r) => this.drawRock(r));
       if (this.boss && !this.bossKilled) this.drawBoss(this.boss);
       this.enemies.forEach((e) => this.drawFighter(e));
@@ -829,6 +942,14 @@ class MainScene extends Phaser.Scene {
     const progress = inHyperspace ? 1 - (this.hyperspaceUntil - now) / CONFIG.HYPERSPACE_DURATION_MS : 0;
     const streak = inHyperspace ? hyperspaceIntensity(progress) : 0;
 
+    // Soft full-canvas wash underneath the streaks, brightest during the
+    // cruise phase — "make it bright" per feedback, on top of the
+    // streaks themselves already being thicker/higher-alpha below.
+    if (inHyperspace) {
+      this.gWhite.fillStyle(COLORS.white, streak * 0.12);
+      this.gWhite.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
     this.gWhite.fillStyle(COLORS.white, 1);
     for (const s of this.stars) {
       const p = project(s.x, s.y, s.z);
@@ -836,9 +957,9 @@ class MainScene extends Phaser.Scene {
       const r = Math.max(0.4, CONFIG.STAR_RADIUS * p.scale);
       if (inHyperspace) {
         const dx = p.x - centerX, dy = p.y - centerY;
-        const len = (8 + r * 30) * streak;
+        const len = (10 + r * 38) * streak;
         const d = Math.max(0.001, Math.hypot(dx, dy));
-        this.gWhite.lineStyle(Math.max(0.6, r * 0.6), COLORS.white, 0.5 + 0.5 * streak);
+        this.gWhite.lineStyle(Math.max(1.0, r * 0.9), COLORS.white, 0.75 + 0.25 * streak);
         this.gWhite.beginPath();
         this.gWhite.moveTo(p.x, p.y);
         this.gWhite.lineTo(p.x + (dx / d) * len, p.y + (dy / d) * len);
@@ -955,12 +1076,15 @@ class MainScene extends Phaser.Scene {
   }
 
   drawBolts() {
-    this.gGreen.lineStyle(2.4, COLORS.green, 1);
     for (const b of this.bolts) {
-      this.gGreen.beginPath();
-      this.gGreen.moveTo(b.x - b.dirX * 16, b.y - b.dirY * 16);
-      this.gGreen.lineTo(b.x, b.y);
-      this.gGreen.strokePath();
+      const g = b.phase2 ? this.gBlue : this.gGreen;
+      const width = b.phase2 ? CONFIG.PHASE2_BOLT_WIDTH : 2.4;
+      const len = b.phase2 ? CONFIG.PHASE2_BOLT_STREAK_LEN : 16;
+      g.lineStyle(width, b.phase2 ? COLORS.blue : COLORS.green, 1);
+      g.beginPath();
+      g.moveTo(b.x - b.dirX * len, b.y - b.dirY * len);
+      g.lineTo(b.x, b.y);
+      g.strokePath();
     }
   }
 
