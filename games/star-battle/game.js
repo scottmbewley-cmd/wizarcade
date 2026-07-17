@@ -117,15 +117,12 @@ const CONFIG = {
   BOSS_TARGETABLE_Z: 16, // weak point only does damage once boss.z closes inside this
 
   // Hyperspace jump into the boss encounter, right when it triggers at
-  // BOSS_SPAWN_TIME: a brief warp-streak starfield transition, all
-  // remaining rocks cleared (rocks stop spawning entirely from this point
-  // on — fighters keep spawning throughout), and a large static planet
-  // appears in the background for scale/drama. Purely a visual overlay —
-  // doesn't pause gameplay underneath it.
-  HYPERSPACE_DURATION_MS: 1100,
-  PLANET_RADIUS_PX: 120,
-  PLANET_X: GAME_WIDTH * 0.72,
-  PLANET_Y: GAME_HEIGHT * 0.22,
+  // BOSS_SPAWN_TIME: a warp-streak starfield transition (with its own
+  // accelerate/cruise/decelerate arc — see hyperspaceIntensity()) leading
+  // straight into the boss reveal. Purely a visual overlay — doesn't
+  // pause gameplay underneath it. Doubled from the first pass (was 1100)
+  // per feedback, plus the accel/decel shaping.
+  HYPERSPACE_DURATION_MS: 2200,
 
   // World-space object radii — screen size/hit-radius is always radius *
   // (FOCAL / z), the same formula used for positions, so these stay in
@@ -139,7 +136,7 @@ const CONFIG = {
   FIGHTER_HIT_MULT: 1.35,
   BOSS_RADIUS: 7,
   BOSS_HULL_HIT_MULT: 1.15,
-  BOSS_WEAKPOINT_RADIUS: 0.8,
+  BOSS_WEAKPOINT_RADIUS: 1.0,  // was 0.8 — bigger, more unmistakable target
   BOSS_WEAKPOINT_HIT_MULT: 1.4,
 
   SHIELD_DAMAGE_ROCK: 9,
@@ -160,6 +157,17 @@ const PALETTE = [COLORS.green, COLORS.blue, COLORS.red, COLORS.magenta];
 
 function rand(min, max) { return min + Math.random() * (max - min); }
 function dist2(x1, y1, x2, y2) { const dx = x1 - x2, dy = y1 - y2; return dx * dx + dy * dy; }
+
+// Accelerate (0..0.35) → cruise at full intensity (0.35..0.65) →
+// decelerate (0.65..1) arc for the hyperspace warp-streak effect, instead
+// of a flat linear ramp — makes the jump actually read as speeding up
+// and slowing back down rather than fading at a constant rate.
+function hyperspaceIntensity(progress) {
+  if (progress < 0.35) { const t = progress / 0.35; return t * t; }
+  if (progress < 0.65) return 1;
+  const t = (progress - 0.65) / 0.35;
+  return 1 - t * t;
+}
 
 // Perspective projection: world (x, y, z) -> screen space. Size scales
 // identically — see the top-of-file comment.
@@ -276,14 +284,20 @@ const FIGHTER_STRUTS_B = [
   [[0.15, -0.15], [0.5, -0.15]], [[0.15, 0.15], [0.5, 0.15]],
 ];
 
-const BOSS_HULL = [
-  [-1, -0.12], [-0.55, -0.3], [0.4, -0.3], [1, -0.05],
-  [1, 0.05], [0.4, 0.3], [-0.55, 0.3], [-1, 0.12],
-];
+// Boss: a colossal wireframe world-ship (deliberately not a literal
+// Death Star — a generic "battle moon" silhouette instead), closing in
+// with the same z-projection system as everything else. Latitude bands
+// (horizontal chords at various heights) and longitude arcs (ellipses
+// through the same center, varying only in width) approximate a
+// wireframe globe cheaply, without real 3D math. BOSS_GREEBLES are short
+// fixed surface-panel marks for a "constructed mega-structure" texture,
+// and BOSS_EQUATOR_BAND is one deliberately thicker/brighter band for a
+// bit of visual signature.
+const BOSS_LATITUDES = [-0.72, -0.42, -0.12, 0.18, 0.48, 0.75];
+const BOSS_EQUATOR_BAND = -0.12;
+const BOSS_LONGITUDE_WIDTHS = [0.32, 0.66];
 const BOSS_GREEBLES = [
-  [[-0.8, -0.2], [-0.8, 0.2]], [[-0.5, -0.28], [-0.5, 0.28]],
-  [[-0.15, -0.3], [-0.15, 0.3]], [[0.2, -0.28], [0.2, 0.28]],
-  [[0.55, -0.16], [0.55, 0.16]],
+  [-0.55, -0.55], [0.42, -0.38], [-0.35, 0.4], [0.5, 0.5], [0.12, -0.68], [-0.15, 0.62],
 ];
 
 function rockShape() {
@@ -375,7 +389,6 @@ class MainScene extends Phaser.Scene {
     this.bossSpawned = false;
     this.bossKilled = false;
     this.hyperspaceUntil = 0;
-    this.planet = null;
     this.fire = { burstIndex: 0, nextBoltTime: 0, cooldownUntil: 0, corner: 0 };
     this.nextEnemyAt = 0;
     this.nextRockAt = 0;
@@ -652,12 +665,12 @@ class MainScene extends Phaser.Scene {
     if (!this.bossSpawned && this.runTime >= CONFIG.BOSS_SPAWN_TIME) {
       this.spawnBoss();
       this.bossSpawned = true;
-      // Hyperspace jump: brief warp-streak starfield transition (see
-      // drawStarfield()), all remaining debris left behind, and a large
-      // static planet appears in the background for scale.
+      // Hyperspace jump: warp-streak starfield transition (see
+      // drawStarfield()) leading into the reveal of the boss itself — a
+      // huge wireframe world closing in with the same z-projection
+      // system as everything else, not a separate decorative backdrop.
       this.hyperspaceUntil = now + CONFIG.HYPERSPACE_DURATION_MS;
       this.rocks = [];
-      this.planet = { x: CONFIG.PLANET_X, y: CONFIG.PLANET_Y, r: CONFIG.PLANET_RADIUS_PX };
     }
 
     for (const e of this.enemies) {
@@ -793,7 +806,6 @@ class MainScene extends Phaser.Scene {
     this.drawStarfield();
 
     if (this.state === 'playing') {
-      if (this.planet) this.drawPlanet(this.planet);
       this.rocks.forEach((r) => this.drawRock(r));
       if (this.boss && !this.bossKilled) this.drawBoss(this.boss);
       this.enemies.forEach((e) => this.drawFighter(e));
@@ -808,11 +820,14 @@ class MainScene extends Phaser.Scene {
     const now = performance.now();
     const inHyperspace = now < this.hyperspaceUntil;
     // Warp-streak effect: stars stretch into long radiating lines instead
-    // of dots for the ~1s hyperspace-jump window (see the boss-trigger
-    // block in stepGameplay()), stretch amount easing out over that
-    // window — the classic "jump to hyperspace" beat, purely cosmetic,
-    // doesn't touch game state.
-    const streak = inHyperspace ? 1 - (this.hyperspaceUntil - now) / CONFIG.HYPERSPACE_DURATION_MS : 0;
+    // of dots for the hyperspace-jump window (see the boss-trigger block
+    // in stepGameplay()), leading into the boss reveal. Purely cosmetic,
+    // doesn't touch game state. Streak length follows an accelerate →
+    // cruise → decelerate arc (hyperspaceIntensity()) rather than a flat
+    // linear ramp, so the jump actually reads as speeding up and then
+    // slowing back down instead of a constant-rate fade.
+    const progress = inHyperspace ? 1 - (this.hyperspaceUntil - now) / CONFIG.HYPERSPACE_DURATION_MS : 0;
+    const streak = inHyperspace ? hyperspaceIntensity(progress) : 0;
 
     this.gWhite.fillStyle(COLORS.white, 1);
     for (const s of this.stars) {
@@ -836,25 +851,15 @@ class MainScene extends Phaser.Scene {
     }
   }
 
-  // Large, static background world — appears once the boss phase begins
-  // (see the hyperspace-jump block in stepGameplay()) for scale/drama.
-  // Deliberately NOT perspective-projected like everything else: it's
-  // meant to read as a fixed, distant backdrop, not something that's
-  // "approaching."
-  drawPlanet(planet) {
-    this.gBlue.lineStyle(1.6, COLORS.blue, 0.8);
-    this.gBlue.strokeCircle(planet.x, planet.y, planet.r);
-    // A few surface-band arcs for texture (drawn as short horizontal
-    // chords at different heights within the disc, not full ellipses, so
-    // they read as latitude bands rather than a ringed/Saturn look).
-    [-0.5, -0.15, 0.2, 0.55].forEach((f) => {
-      const y = planet.y + planet.r * f;
-      const halfW = Math.sqrt(Math.max(0, planet.r * planet.r - (planet.r * f) * (planet.r * f)));
-      this.gBlue.beginPath();
-      this.gBlue.moveTo(planet.x - halfW, y);
-      this.gBlue.lineTo(planet.x + halfW, y);
-      this.gBlue.strokePath();
-    });
+  // Horizontal chord across the sphere's silhouette at height fraction f
+  // (-1..1 from center) — shared by the boss's latitude bands.
+  drawLatitudeChord(g, cx, cy, size, f) {
+    const y = cy + size * f;
+    const halfW = Math.sqrt(Math.max(0, size * size - (size * f) * (size * f)));
+    g.beginPath();
+    g.moveTo(cx - halfW, y);
+    g.lineTo(cx + halfW, y);
+    g.strokePath();
   }
 
   drawFighter(e) {
@@ -887,50 +892,65 @@ class MainScene extends Phaser.Scene {
     this.gBlue.strokePath();
   }
 
+  // The boss IS the huge wireframe world revealed at the end of the
+  // hyperspace jump — not a separate decorative planet plus a small
+  // ship, and not the old wedge-shaped capital-ship silhouette. It closes
+  // in with the exact same z-projection system as everything else (see
+  // stepGameplay()'s boss-progress block), so it's genuinely a speck when
+  // it first appears and fills most of the screen by the time it's
+  // ramming distance.
   drawBoss(b) {
     const p = project(b.x, b.y, b.z);
     const size = CONFIG.BOSS_RADIUS * p.scale;
     if (size < 2) return;
 
-    // Hull + dome + greebles — no glow layer carries extra cost here: the
-    // hull can span 1000+ px near the end of a run, but this Graphics
-    // object's postFX pass is a single fixed-cost sweep over the whole
-    // 480x800 canvas regardless of how big any one shape inside it is.
+    // No shadowBlur here — this shape can span 1000+ px near the end of a
+    // run, and per-shape CPU blur at that size is exactly what made the
+    // old build laggy. The one fixed postFX glow pass already applied to
+    // this whole Graphics layer at creation (see create()) is what gives
+    // it its glow instead, at a cost independent of how big it gets.
     this.gGreen.lineStyle(1.4, COLORS.green, 1);
-    this.gGreen.beginPath();
-    BOSS_HULL.forEach(([lx, ly], i) => {
-      const [x, y] = xf(lx, ly, p.x, p.y, size, 0);
-      if (i === 0) this.gGreen.moveTo(x, y); else this.gGreen.lineTo(x, y);
+    this.gGreen.strokeCircle(p.x, p.y, size);
+
+    // Equator band: one deliberately thicker/brighter latitude line for a
+    // bit of visual signature, distinct from the rest of the surface grid.
+    this.gGreen.lineStyle(2.2, COLORS.green, 1);
+    this.drawLatitudeChord(this.gGreen, p.x, p.y, size, BOSS_EQUATOR_BAND);
+
+    this.gGreen.lineStyle(1, COLORS.green, 0.7);
+    BOSS_LATITUDES.forEach((f) => this.drawLatitudeChord(this.gGreen, p.x, p.y, size, f));
+    BOSS_LONGITUDE_WIDTHS.forEach((wf) => this.gGreen.strokeEllipse(p.x, p.y, size * 2 * wf, size * 2));
+
+    BOSS_GREEBLES.forEach(([gx, gy]) => {
+      const cx = p.x + gx * size, cy = p.y + gy * size;
+      this.gGreen.beginPath();
+      this.gGreen.moveTo(cx - size * 0.06, cy); this.gGreen.lineTo(cx + size * 0.06, cy);
+      this.gGreen.moveTo(cx, cy - size * 0.06); this.gGreen.lineTo(cx, cy + size * 0.06);
+      this.gGreen.strokePath();
     });
-    this.gGreen.closePath();
-    this.gGreen.strokePath();
 
-    const [domeX, domeY] = xf(0.15, 0, p.x, p.y, size, 0);
-    this.gGreen.strokeEllipse(domeX, domeY, size * 0.44, size * 0.28);
-
-    for (const [[x1, y1], [x2, y2]] of BOSS_GREEBLES) {
-      const [ax, ay] = xf(x1, y1, p.x, p.y, size, 0);
-      const [bx, by] = xf(x2, y2, p.x, p.y, size, 0);
-      this.gGreen.beginPath(); this.gGreen.moveTo(ax, ay); this.gGreen.lineTo(bx, by); this.gGreen.strokePath();
-    }
-
-    // Weak point — pulsing, drifting, small footprint (~1/9th the hull)
-    // even at max boss size, so it stays cheap to include in a glow layer.
+    // Weak point — a large, unmistakable bullseye (outer ring, mid ring,
+    // center dot, 4 radiating tick marks). Always visible, even long
+    // before it's actually targetable (dim blue, no damage), specifically
+    // so the player always knows exactly where to aim well ahead of when
+    // it starts to matter — the whole point of the request that made this
+    // more elaborate than the original single-ring marker.
     const wp = project(b.x + b.wx, b.y + b.wy, b.z);
     const targetable = b.z <= CONFIG.BOSS_TARGETABLE_Z;
     const pulse = 0.55 + Math.sin(b.pulsePhase) * 0.45;
-    const wSize = Math.max(4, CONFIG.BOSS_WEAKPOINT_RADIUS * p.scale);
+    const wSize = Math.max(5, CONFIG.BOSS_WEAKPOINT_RADIUS * p.scale);
     const wColor = targetable ? (Math.sin(b.pulsePhase * 1.3) > 0 ? COLORS.magenta : COLORS.red) : COLORS.blue;
     const wg = wColor === COLORS.magenta ? this.gMagenta : wColor === COLORS.red ? this.gRed : this.gBlue;
-    const alpha = targetable ? 1 : 0.4;
-    wg.lineStyle(2, wColor, alpha);
+    const alpha = targetable ? 1 : 0.55;
+    wg.lineStyle(targetable ? 2.6 : 1.6, wColor, alpha);
     wg.strokeCircle(wp.x, wp.y, wSize * pulse);
-    wg.strokeCircle(wp.x, wp.y, wSize * 0.4);
+    wg.strokeCircle(wp.x, wp.y, wSize * 0.55);
+    wg.strokeCircle(wp.x, wp.y, wSize * 0.2);
     wg.beginPath();
-    wg.moveTo(wp.x - wSize * 1.3, wp.y); wg.lineTo(wp.x - wSize * 0.6, wp.y);
-    wg.moveTo(wp.x + wSize * 0.6, wp.y); wg.lineTo(wp.x + wSize * 1.3, wp.y);
-    wg.moveTo(wp.x, wp.y - wSize * 1.3); wg.lineTo(wp.x, wp.y - wSize * 0.6);
-    wg.moveTo(wp.x, wp.y + wSize * 0.6); wg.lineTo(wp.x, wp.y + wSize * 1.3);
+    wg.moveTo(wp.x - wSize * 1.6, wp.y); wg.lineTo(wp.x - wSize * 0.7, wp.y);
+    wg.moveTo(wp.x + wSize * 0.7, wp.y); wg.lineTo(wp.x + wSize * 1.6, wp.y);
+    wg.moveTo(wp.x, wp.y - wSize * 1.6); wg.lineTo(wp.x, wp.y - wSize * 0.7);
+    wg.moveTo(wp.x, wp.y + wSize * 0.7); wg.lineTo(wp.x, wp.y + wSize * 1.6);
     wg.strokePath();
   }
 
@@ -1024,7 +1044,7 @@ class MainScene extends Phaser.Scene {
     this.crosshair = { x: centerX, y: centerY };
     this.enemies = []; this.rocks = []; this.bolts = []; this.particles = [];
     this.boss = null; this.bossSpawned = false; this.bossKilled = false;
-    this.hyperspaceUntil = 0; this.planet = null;
+    this.hyperspaceUntil = 0;
     this.fire = { burstIndex: 0, nextBoltTime: 0, cooldownUntil: 0, corner: 0 };
     const now = performance.now();
     this.nextEnemyAt = now + rand(CONFIG.ENEMY_SPAWN_MIN_MS, CONFIG.ENEMY_SPAWN_MAX_MS);
@@ -1045,11 +1065,11 @@ class MainScene extends Phaser.Scene {
       playCrashCue();
     } else if (reason === 'rammed') {
       this.endTitle.textContent = 'GAME OVER';
-      this.endSubtitle.textContent = 'DESTROYED — RAMMED BY CAPITAL SHIP';
+      this.endSubtitle.textContent = 'DESTROYED — COLLISION WITH THE BATTLE MOON';
       playCrashCue();
     } else {
       this.endTitle.textContent = this.bossKilled ? 'MISSION COMPLETE' : 'TIME EXPIRED';
-      this.endSubtitle.textContent = this.bossKilled ? 'CAPITAL SHIP DESTROYED — YOU SURVIVED' : 'YOU SURVIVED THE RUN';
+      this.endSubtitle.textContent = this.bossKilled ? 'BATTLE MOON DESTROYED — YOU SURVIVED' : 'YOU SURVIVED THE RUN';
     }
     this.endScore.textContent = Math.floor(this.score);
     this.endScreen.classList.remove('hidden');
