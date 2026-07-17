@@ -1,7 +1,7 @@
 // WizArcade — Munch Man
 //
 // Game #2 in the WizArcade suite. Same shared conventions as
-// games/test-invaders/: code-drawn pixel-art textures (no external image
+// games/star-invaders/: code-drawn pixel-art textures (no external image
 // assets), delta-time-scaled movement, a retro HUD score readout, and an
 // endless round-over-round difficulty ramp with single-hit death + instant
 // "TAP TO RETRY". Input is the shared /controller/controller.js module in

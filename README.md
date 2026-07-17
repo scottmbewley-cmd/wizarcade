@@ -13,7 +13,7 @@ CDN, no build step). Deployable directly to GitHub Pages.
 /index.html          picker/landing page
 /style.css            shared picker styling
 /games
-  /test-invaders
+  /star-invaders
     index.html         loads Phaser + the game
     game.js             game logic
 /controller           shared on-screen touch controller module

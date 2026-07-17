@@ -1,10 +1,13 @@
-// WizArcade — Test Invaders (controller integration test build)
+// WizArcade — Star Invaders
 //
-// This is a copy of games/space-invaders/ used ONLY to prove out
-// /controller/controller.js as a real, working input source for a real
-// game. The game itself — formation mechanics, endless wave escalation,
-// bunkers, difficulty tuning, visuals, HUD, speed control — is untouched
-// from the live Space Invaders build. The only functional differences:
+// Folder renamed from games/test-invaders/ to games/star-invaders/ to match
+// its actual branding/title everywhere else (hub tile, page title, og:title)
+// — this started life as a copy of an earlier games/space-invaders/ build,
+// created ONLY to prove out /controller/controller.js as a real, working
+// input source for a real game (that source build no longer exists; this IS
+// now the live game). The formation mechanics, endless wave escalation,
+// bunkers, difficulty tuning, visuals, HUD, and speed control all carried
+// over unchanged. The functional differences from that original source:
 //
 //   1. The bespoke in-canvas footer-drag control code is gone. Movement
 //      input now comes entirely from a WizController instance (absolute
@@ -16,12 +19,11 @@
 //      footer band to clear anymore) — the ship rests directly on the
 //      line where the canvas ends, below which the control box floats.
 //   3. The speed-multiplier preference is stored under its own
-//      localStorage key ("wizarcade-test-invaders-speed") so it never
-//      collides with the real Space Invaders build's saved preference.
-//      The control box's chosen position/size is stored separately
-//      again, under "wizarcade-test-invaders-layout" — see
-//      createController() — so the two settings never clash with each
-//      other or with Space Invaders.
+//      localStorage key ("wizarcade-test-invaders-speed" — kept as-is
+//      post-rename so already-saved player preferences/layout/mute
+//      choices aren't silently reset). The control box's chosen
+//      position/size is stored separately again, under
+//      "wizarcade-test-invaders-layout" — see createController().
 //
 // All movement is still delta-time scaled — nothing about that changed.
 
