@@ -1104,11 +1104,19 @@ class MainScene extends Phaser.Scene {
     const color = e.hp < CONFIG.ENEMY_HP ? COLORS.red : COLORS.magenta;
     const struts = e.style === 'B' ? FIGHTER_STRUTS_B : FIGHTER_STRUTS;
     g.lineStyle(1.6, color, 1);
+    // Batched into a single beginPath/strokePath for all struts instead of
+    // one pair per strut (14 per fighter) — with up to ENEMY_MAX_ALIVE
+    // fighters on screen, that was 50+ separate Graphics path calls every
+    // frame just for fighters, which is real CPU overhead since Graphics
+    // rebuilds its geometry from scratch each frame. Reported as laggy by
+    // a tester — this was the main steady-state cost, not a one-off.
+    g.beginPath();
     for (const [[x1, y1], [x2, y2]] of struts) {
       const [ax, ay] = xf(x1, y1, p.x, p.y, size, angle);
       const [bx, by] = xf(x2, y2, p.x, p.y, size, angle);
-      g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.strokePath();
+      g.moveTo(ax, ay); g.lineTo(bx, by);
     }
+    g.strokePath();
   }
 
   drawRock(r) {
@@ -1154,13 +1162,15 @@ class MainScene extends Phaser.Scene {
     BOSS_LATITUDES.forEach((f) => this.drawLatitudeChord(this.gGreen, p.x, p.y, size, f));
     BOSS_LONGITUDE_WIDTHS.forEach((wf) => this.gGreen.strokeEllipse(p.x, p.y, size * 2 * wf, size * 2));
 
+    // Batched: one beginPath/strokePath for all greebles instead of one
+    // pair per mark (see the drawFighter comment for why this matters).
+    this.gGreen.beginPath();
     BOSS_GREEBLES.forEach(([gx, gy]) => {
       const cx = p.x + gx * size, cy = p.y + gy * size;
-      this.gGreen.beginPath();
       this.gGreen.moveTo(cx - size * 0.06, cy); this.gGreen.lineTo(cx + size * 0.06, cy);
       this.gGreen.moveTo(cx, cy - size * 0.06); this.gGreen.lineTo(cx, cy + size * 0.06);
-      this.gGreen.strokePath();
     });
+    this.gGreen.strokePath();
 
     // Weak point — a large, unmistakable bullseye (outer ring, mid ring,
     // center dot, 4 radiating tick marks). Always visible, even long
@@ -1188,16 +1198,28 @@ class MainScene extends Phaser.Scene {
   }
 
   drawBolts() {
+    // lineStyle (width/color) only ever varies by phase2, so batch each
+    // phase's bolts into one beginPath/strokePath instead of one pair per
+    // bolt.
+    let greenStarted = false, blueStarted = false;
     for (const b of this.bolts) {
-      const g = b.phase2 ? this.gBoltsBlue : this.gBoltsGreen;
-      const width = b.phase2 ? CONFIG.PHASE2_BOLT_WIDTH : 2.4;
       const len = b.phase2 ? CONFIG.PHASE2_BOLT_STREAK_LEN : 16;
-      g.lineStyle(width, b.phase2 ? COLORS.blue : COLORS.green, 1);
-      g.beginPath();
+      if (b.phase2 && !blueStarted) {
+        this.gBoltsBlue.lineStyle(CONFIG.PHASE2_BOLT_WIDTH, COLORS.blue, 1);
+        this.gBoltsBlue.beginPath();
+        blueStarted = true;
+      }
+      if (!b.phase2 && !greenStarted) {
+        this.gBoltsGreen.lineStyle(2.4, COLORS.green, 1);
+        this.gBoltsGreen.beginPath();
+        greenStarted = true;
+      }
+      const g = b.phase2 ? this.gBoltsBlue : this.gBoltsGreen;
       g.moveTo(b.x - b.dirX * len, b.y - b.dirY * len);
       g.lineTo(b.x, b.y);
-      g.strokePath();
     }
+    if (greenStarted) this.gBoltsGreen.strokePath();
+    if (blueStarted) this.gBoltsBlue.strokePath();
   }
 
   drawParticles() {
@@ -1229,14 +1251,15 @@ class MainScene extends Phaser.Scene {
     this.gCrosshair.strokePath();
 
     const tick = 6, r = 30;
+    // Batched: one beginPath/strokePath for all four corner ticks.
+    this.gCrosshair.beginPath();
     [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sy]) => {
-      this.gCrosshair.beginPath();
       this.gCrosshair.moveTo(x + sx * r, y + sy * r);
       this.gCrosshair.lineTo(x + sx * (r + tick), y + sy * r);
       this.gCrosshair.moveTo(x + sx * r, y + sy * r);
       this.gCrosshair.lineTo(x + sx * r, y + sy * (r + tick));
-      this.gCrosshair.strokePath();
     });
+    this.gCrosshair.strokePath();
   }
 
   drawCockpitFrame() {
