@@ -136,8 +136,11 @@ const COLOR_PLAYER = 0x33ff66; // paddle + lives pips
 const COLOR_WALL = 0x4dd8ff; // court border
 const COLOR_BALL_CORE = 0xffffff;
 const COLOR_BALL_GLOW = 0xffe066;
-const COLOR_BUMPER = 0xff5da2; // pink, matches the suite's squid-alien accent
-const COLOR_BUMPER_CORE = 0xffffff;
+// Bumpers and the paddle are baked white and colored at runtime via
+// setTint() instead of a fixed baked-in color — see PADDLE_COLOR_CYCLE_
+// SECONDS and BUMPER_COLOR_PALETTE below for how each uses that.
+const BUMPER_COLOR_PALETTE = [0xff5da2, 0x4dd8ff, 0xffe066, 0x33ff66, 0xffb020, 0xbf5aff];
+const PADDLE_COLOR_CYCLE_SECONDS = 5; // one full rainbow rotation every 5s of survival
 
 function drawPaddleTexture(gfx, key, color, w, h) {
   gfx.clear();
@@ -156,15 +159,25 @@ function drawBallTexture(gfx, key, glowColor, coreColor, diameter) {
   gfx.generateTexture(key, diameter, diameter);
 }
 
-function drawBumperTexture(gfx, key, glowColor, coreColor, radius) {
+// Upward-pointing triangle inscribed in a (radius*2) square, baked in white
+// so setTint() (see onBumperHit()/createBumpers()) controls the actual
+// per-instance color — same glow+core+outline layering as drawBumperTexture
+// used before turning these into triangles, just triangular now.
+function drawBumperTexture(gfx, key, radius) {
   gfx.clear();
-  gfx.fillStyle(glowColor, 0.35);
-  gfx.fillCircle(radius, radius, radius);
-  gfx.fillStyle(coreColor, 1);
-  gfx.fillCircle(radius, radius, radius * 0.72);
-  gfx.lineStyle(2, glowColor, 0.9);
-  gfx.strokeCircle(radius, radius, radius * 0.72);
-  gfx.generateTexture(key, radius * 2, radius * 2);
+  const size = radius * 2;
+  const inset = size * 0.16;
+
+  gfx.fillStyle(0xffffff, 0.35);
+  gfx.fillTriangle(size / 2, 0, 0, size, size, size);
+
+  gfx.fillStyle(0xffffff, 1);
+  gfx.fillTriangle(size / 2, inset, inset, size - inset * 0.5, size - inset, size - inset * 0.5);
+
+  gfx.lineStyle(2, 0xffffff, 0.9);
+  gfx.strokeTriangle(size / 2, inset, inset, size - inset * 0.5, size - inset, size - inset * 0.5);
+
+  gfx.generateTexture(key, size, size);
 }
 
 function drawScanlineTexture(gfx, key) {
@@ -196,10 +209,12 @@ class MainScene extends Phaser.Scene {
   buildTextures() {
     const gfx = this.add.graphics();
 
-    drawPaddleTexture(gfx, "paddle", COLOR_PLAYER, PADDLE_WIDTH, PADDLE_HEIGHT);
+    // Baked white — updatePaddleColor() tints it every frame (see update()).
+    drawPaddleTexture(gfx, "paddle", 0xffffff, PADDLE_WIDTH, PADDLE_HEIGHT);
     drawPaddleTexture(gfx, "lifePip", COLOR_PLAYER, 12, 6);
     drawBallTexture(gfx, "ball", COLOR_BALL_GLOW, COLOR_BALL_CORE, BALL_SIZE);
-    drawBumperTexture(gfx, "bumper", COLOR_BUMPER, COLOR_BUMPER_CORE, BUMPER_RADIUS);
+    // Also baked white — createBumpers()/onBumperHit() tint each instance.
+    drawBumperTexture(gfx, "bumper", BUMPER_RADIUS);
     drawScanlineTexture(gfx, "scanline");
 
     gfx.destroy();
@@ -232,15 +247,19 @@ class MainScene extends Phaser.Scene {
 
   // A few static pinball-style bumpers in the upper court — see
   // BUMPER_POSITIONS' own comment for the layout rationale. Static circular
-  // bodies, refreshBody() required after setCircle() on a static body so its
-  // cached hitbox actually reflects the new radius.
+  // bodies (Arcade Physics has no triangular body shape, so the hitbox stays
+  // a circle roughly inscribing the visible triangle — see drawBumperTexture)
+  // — refreshBody() required after setCircle() on a static body so its
+  // cached hitbox actually reflects the new radius. Each starts on a
+  // different palette color; onBumperHit() randomizes it further on contact.
   createBumpers() {
     this.bumpers = this.physics.add.staticGroup();
-    BUMPER_POSITIONS.forEach((pos) => {
+    BUMPER_POSITIONS.forEach((pos, i) => {
       const bumper = this.bumpers.create(pos.x, pos.y, "bumper");
       bumper.body.setCircle(BUMPER_RADIUS);
       bumper.refreshBody();
       bumper.setDepth(4);
+      bumper.setTint(BUMPER_COLOR_PALETTE[i % BUMPER_COLOR_PALETTE.length]);
     });
   }
 
@@ -622,6 +641,15 @@ class MainScene extends Phaser.Scene {
     }
   }
 
+  // Continuous rainbow cycle, driven by elapsed survival time (same
+  // deterministic-from-elapsedSeconds() pattern as currentBallSpeed()) —
+  // "changing bat colours."
+  updatePaddleColor() {
+    const hue = (this.elapsedSeconds() / PADDLE_COLOR_CYCLE_SECONDS) % 1;
+    const color = Phaser.Display.Color.HSVToRGB(hue, 0.85, 1);
+    this.paddle.setTint(color.color);
+  }
+
   updatePaddleMovement(dt) {
     const halfW = this.paddle.displayWidth / 2;
 
@@ -671,13 +699,20 @@ class MainScene extends Phaser.Scene {
   // Bumpers don't need custom reflection math — Arcade Physics' own
   // circle-vs-circle separation against a static immovable body already
   // gives a natural radial bounce, re-normalized to currentBallSpeed() by
-  // update()'s per-frame velocity scaling like every other bounce. Just a
-  // score bonus and a squash-tween for pinball-style feedback.
+  // update()'s per-frame velocity scaling like every other bounce. A score
+  // bonus, a squash-tween, and a random recolor (never the same color twice
+  // in a row) for pinball-style feedback.
   onBumperHit(ball, bumper) {
     if (this.gameOver || !this.ballInPlay) return;
 
     this.bumperHits += 1;
     this.playHit();
+
+    let nextColor = bumper.tintTopLeft;
+    while (nextColor === bumper.tintTopLeft) {
+      nextColor = Phaser.Utils.Array.GetRandom(BUMPER_COLOR_PALETTE);
+    }
+    bumper.setTint(nextColor);
 
     this.tweens.add({
       targets: bumper,
@@ -714,6 +749,7 @@ class MainScene extends Phaser.Scene {
 
     this.updatePaddleMovement(dt);
     this.updatePaddleWidth();
+    this.updatePaddleColor();
 
     if (this.ballInPlay) {
       // Re-normalize the velocity vector to the current target speed every
