@@ -45,13 +45,14 @@ const BALL_LAUNCH_CONE = Phaser.Math.DegToRad(40); // max deflection from straig
 const PADDLE_BOUNCE_MAX_ANGLE = Phaser.Math.DegToRad(60); // max deflection from straight-up off the paddle — never fully horizontal
 const BALL_START_Y = 120; // near the top
 
-// --- Pinball-style bumpers: a few static circular obstacles in the upper
-// court that reflect the ball unpredictably (Arcade Physics' own circle-vs-
-// circle separation), on top of the deterministic wall/paddle bounces.
-// Fixed triangular layout — clear of the walls (radius + margin) and well
-// above the paddle's own lane, so they add chaos to the rally without ever
-// blocking a shot at the walls. ---
-const BUMPER_RADIUS = 14;
+// --- Pinball-style bumpers: a few static flat-triangle obstacles in the
+// upper court that reflect the ball unpredictably (Arcade Physics rect-body
+// separation), on top of the deterministic wall/paddle bounces. Fixed
+// triangular layout — clear of the walls and well above the paddle's own
+// lane, so they add chaos to the rally without ever blocking a shot at the
+// walls. ---
+const BUMPER_WIDTH = 36;
+const BUMPER_HEIGHT = 18; // flatter/wider than tall, unlike an equilateral triangle
 const BUMPER_HIT_SCORE = 5; // added to score per bumper contact, same spirit as rallyHits*10
 const BUMPER_POSITIONS = [
   { x: GAME_WIDTH * 0.3, y: 300 },
@@ -159,25 +160,25 @@ function drawBallTexture(gfx, key, glowColor, coreColor, diameter) {
   gfx.generateTexture(key, diameter, diameter);
 }
 
-// Upward-pointing triangle inscribed in a (radius*2) square, baked in white
-// so setTint() (see onBumperHit()/createBumpers()) controls the actual
-// per-instance color — same glow+core+outline layering as drawBumperTexture
-// used before turning these into triangles, just triangular now.
-function drawBumperTexture(gfx, key, radius) {
+// Flat, wide upward-pointing triangle (width > height, unlike an
+// equilateral one) inscribed in a (width x height) box, baked in white so
+// setTint()/setTintFill() (see onBumperHit()/createBumpers()) controls the
+// actual per-instance color — same glow+core+outline layering as before.
+function drawBumperTexture(gfx, key, width, height) {
   gfx.clear();
-  const size = radius * 2;
-  const inset = size * 0.16;
+  const insetX = width * 0.14;
+  const insetY = height * 0.2;
 
   gfx.fillStyle(0xffffff, 0.35);
-  gfx.fillTriangle(size / 2, 0, 0, size, size, size);
+  gfx.fillTriangle(width / 2, 0, 0, height, width, height);
 
   gfx.fillStyle(0xffffff, 1);
-  gfx.fillTriangle(size / 2, inset, inset, size - inset * 0.5, size - inset, size - inset * 0.5);
+  gfx.fillTriangle(width / 2, insetY, insetX, height - insetY * 0.5, width - insetX, height - insetY * 0.5);
 
   gfx.lineStyle(2, 0xffffff, 0.9);
-  gfx.strokeTriangle(size / 2, inset, inset, size - inset * 0.5, size - inset, size - inset * 0.5);
+  gfx.strokeTriangle(width / 2, insetY, insetX, height - insetY * 0.5, width - insetX, height - insetY * 0.5);
 
-  gfx.generateTexture(key, size, size);
+  gfx.generateTexture(key, width, height);
 }
 
 function drawScanlineTexture(gfx, key) {
@@ -214,7 +215,7 @@ class MainScene extends Phaser.Scene {
     drawPaddleTexture(gfx, "lifePip", COLOR_PLAYER, 12, 6);
     drawBallTexture(gfx, "ball", COLOR_BALL_GLOW, COLOR_BALL_CORE, BALL_SIZE);
     // Also baked white — createBumpers()/onBumperHit() tint each instance.
-    drawBumperTexture(gfx, "bumper", BUMPER_RADIUS);
+    drawBumperTexture(gfx, "bumper", BUMPER_WIDTH, BUMPER_HEIGHT);
     drawScanlineTexture(gfx, "scanline");
 
     gfx.destroy();
@@ -246,18 +247,25 @@ class MainScene extends Phaser.Scene {
   }
 
   // A few static pinball-style bumpers in the upper court — see
-  // BUMPER_POSITIONS' own comment for the layout rationale. Static circular
-  // bodies (Arcade Physics has no triangular body shape, so the hitbox stays
-  // a circle roughly inscribing the visible triangle — see drawBumperTexture)
-  // — refreshBody() required after setCircle() on a static body so its
-  // cached hitbox actually reflects the new radius. Each starts on a
-  // different palette color; onBumperHit() randomizes it further on contact.
+  // BUMPER_POSITIONS' own comment for the layout rationale. Static
+  // rectangular bodies (Arcade Physics has no triangular body shape, so the
+  // hitbox is a rect roughly inscribing the flat visible triangle — see
+  // drawBumperTexture), sized slightly smaller than the full texture so the
+  // ball visibly touches the triangle before the bounce registers.
+  // refreshBody() required BEFORE setSize() (see the comment inline below)
+  // — reversed, it silently discards the custom size. Each bumper starts on
+  // a different palette color; onBumperHit() randomizes it further on
+  // contact.
   createBumpers() {
     this.bumpers = this.physics.add.staticGroup();
     BUMPER_POSITIONS.forEach((pos, i) => {
       const bumper = this.bumpers.create(pos.x, pos.y, "bumper");
-      bumper.body.setCircle(BUMPER_RADIUS);
+      // refreshBody() BEFORE setSize(), not after — refreshBody() re-derives
+      // the static body from the game object's texture frame, which silently
+      // discards a prior setSize() if called afterward (confirmed the hard
+      // way: order matters, there's no Phaser warning either way).
       bumper.refreshBody();
+      bumper.body.setSize(BUMPER_WIDTH * 0.82, BUMPER_HEIGHT * 0.85, true);
       bumper.setDepth(4);
       bumper.setTint(BUMPER_COLOR_PALETTE[i % BUMPER_COLOR_PALETTE.length]);
     });
@@ -696,12 +704,12 @@ class MainScene extends Phaser.Scene {
     this.playHit();
   }
 
-  // Bumpers don't need custom reflection math — Arcade Physics' own
-  // circle-vs-circle separation against a static immovable body already
-  // gives a natural radial bounce, re-normalized to currentBallSpeed() by
-  // update()'s per-frame velocity scaling like every other bounce. A score
-  // bonus, a squash-tween, and a random recolor (never the same color twice
-  // in a row) for pinball-style feedback.
+  // Bumpers don't need custom reflection math — Arcade Physics' own rect-body
+  // separation against a static immovable body already gives a natural
+  // bounce, re-normalized to currentBallSpeed() by update()'s per-frame
+  // velocity scaling like every other bounce. A score bonus, a squash-tween,
+  // a bright white flash, and a random recolor (never the same color twice
+  // in a row) for pinball-style "lights up when hit" feedback.
   onBumperHit(ball, bumper) {
     if (this.gameOver || !this.ballInPlay) return;
 
@@ -712,7 +720,15 @@ class MainScene extends Phaser.Scene {
     while (nextColor === bumper.tintTopLeft) {
       nextColor = Phaser.Utils.Array.GetRandom(BUMPER_COLOR_PALETTE);
     }
-    bumper.setTint(nextColor);
+
+    // setTintFill (unlike setTint) replaces the texture's own RGB outright
+    // rather than multiplying it, so this reads as a genuine bright flash
+    // rather than just a lighter shade of the current color. Settles into
+    // the new palette color shortly after.
+    bumper.setTintFill(0xffffff);
+    this.time.delayedCall(70, () => {
+      if (bumper.active) bumper.setTint(nextColor);
+    });
 
     this.tweens.add({
       targets: bumper,
