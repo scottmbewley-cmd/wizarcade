@@ -21,10 +21,18 @@ const PADDLE_KEY_SPEED = 340; // px/s, desktop arrow/A-D movement
 
 // --- Touch/pointer steering feel (independently tunable; playtest-driven) ---
 // Same two constants, same semantics, as star-invaders' updatePlayerMovement
-// — see that file's own comment for the full derivation of 0.6375. Starting
-// at the same value here since it's a proven feel for this exact control
-// scheme (absolute-mode WizController, left/right only).
-const STEERING_SENSITIVITY = 0.6375;
+// — see that file's own comment for the full derivation of 0.6375 there.
+// STEERING_SENSITIVITY diverges from that borrowed default: at 0.6375, a
+// full edge-to-edge drag across the strip only mapped to pointerX in
+// [87, 393] (rangeX scaled about GAME_WIDTH/2 in createController() below),
+// so the paddle could never reach far enough to fully cover the left/right
+// walls — a real gap in THIS game (the ball can and does bounce all the way
+// into a corner), unlike Star Invaders where the ship undershooting the
+// exact screen edge by a few dozen px barely matters. 1.0 maps the full
+// drag to the full [0, GAME_WIDTH] range, so the paddle's own clamp in
+// updatePaddleMovement() (to [halfW, GAME_WIDTH - halfW]) is what limits
+// it, not the steering mapping — letting it reach flush against both walls.
+const STEERING_SENSITIVITY = 1.0;
 const MOVEMENT_SMOOTHING = 0.6375;
 
 // --- Ball ---
@@ -36,6 +44,20 @@ const BALL_SPEED_GROWTH = 4; // px/s added per elapsed second of survival
 const BALL_LAUNCH_CONE = Phaser.Math.DegToRad(40); // max deflection from straight-down on launch/relaunch
 const PADDLE_BOUNCE_MAX_ANGLE = Phaser.Math.DegToRad(60); // max deflection from straight-up off the paddle — never fully horizontal
 const BALL_START_Y = 120; // near the top
+
+// --- Pinball-style bumpers: a few static circular obstacles in the upper
+// court that reflect the ball unpredictably (Arcade Physics' own circle-vs-
+// circle separation), on top of the deterministic wall/paddle bounces.
+// Fixed triangular layout — clear of the walls (radius + margin) and well
+// above the paddle's own lane, so they add chaos to the rally without ever
+// blocking a shot at the walls. ---
+const BUMPER_RADIUS = 14;
+const BUMPER_HIT_SCORE = 5; // added to score per bumper contact, same spirit as rallyHits*10
+const BUMPER_POSITIONS = [
+  { x: GAME_WIDTH * 0.3, y: 300 },
+  { x: GAME_WIDTH * 0.7, y: 300 },
+  { x: GAME_WIDTH * 0.5, y: 210 },
+];
 
 // --- Optional secondary difficulty ramp: paddle very slowly narrows with
 // survival time. Off by default until playtested (see build spec) — floored
@@ -114,6 +136,8 @@ const COLOR_PLAYER = 0x33ff66; // paddle + lives pips
 const COLOR_WALL = 0x4dd8ff; // court border
 const COLOR_BALL_CORE = 0xffffff;
 const COLOR_BALL_GLOW = 0xffe066;
+const COLOR_BUMPER = 0xff5da2; // pink, matches the suite's squid-alien accent
+const COLOR_BUMPER_CORE = 0xffffff;
 
 function drawPaddleTexture(gfx, key, color, w, h) {
   gfx.clear();
@@ -130,6 +154,17 @@ function drawBallTexture(gfx, key, glowColor, coreColor, diameter) {
   gfx.fillStyle(coreColor, 1);
   gfx.fillCircle(r, r, r * 0.65);
   gfx.generateTexture(key, diameter, diameter);
+}
+
+function drawBumperTexture(gfx, key, glowColor, coreColor, radius) {
+  gfx.clear();
+  gfx.fillStyle(glowColor, 0.35);
+  gfx.fillCircle(radius, radius, radius);
+  gfx.fillStyle(coreColor, 1);
+  gfx.fillCircle(radius, radius, radius * 0.72);
+  gfx.lineStyle(2, glowColor, 0.9);
+  gfx.strokeCircle(radius, radius, radius * 0.72);
+  gfx.generateTexture(key, radius * 2, radius * 2);
 }
 
 function drawScanlineTexture(gfx, key) {
@@ -164,6 +199,7 @@ class MainScene extends Phaser.Scene {
     drawPaddleTexture(gfx, "paddle", COLOR_PLAYER, PADDLE_WIDTH, PADDLE_HEIGHT);
     drawPaddleTexture(gfx, "lifePip", COLOR_PLAYER, 12, 6);
     drawBallTexture(gfx, "ball", COLOR_BALL_GLOW, COLOR_BALL_CORE, BALL_SIZE);
+    drawBumperTexture(gfx, "bumper", COLOR_BUMPER, COLOR_BUMPER_CORE, BUMPER_RADIUS);
     drawScanlineTexture(gfx, "scanline");
 
     gfx.destroy();
@@ -192,6 +228,20 @@ class MainScene extends Phaser.Scene {
     gfx.lineTo(GAME_WIDTH - 2, GAME_HEIGHT);
     gfx.strokePath();
     gfx.setDepth(1);
+  }
+
+  // A few static pinball-style bumpers in the upper court — see
+  // BUMPER_POSITIONS' own comment for the layout rationale. Static circular
+  // bodies, refreshBody() required after setCircle() on a static body so its
+  // cached hitbox actually reflects the new radius.
+  createBumpers() {
+    this.bumpers = this.physics.add.staticGroup();
+    BUMPER_POSITIONS.forEach((pos) => {
+      const bumper = this.bumpers.create(pos.x, pos.y, "bumper");
+      bumper.body.setCircle(BUMPER_RADIUS);
+      bumper.refreshBody();
+      bumper.setDepth(4);
+    });
   }
 
   // Wires up the shared /controller/controller.js module — see
@@ -426,6 +476,7 @@ class MainScene extends Phaser.Scene {
     this.startTime = this.time.now;
     this.gameOver = false;
     this.rallyHits = 0;
+    this.bumperHits = 0;
     this.lives = LIVES_START;
     this.pointerActive = false;
     this.pointerX = GAME_WIDTH / 2;
@@ -490,6 +541,7 @@ class MainScene extends Phaser.Scene {
     this.ball.setDepth(6);
     this.ballInPlay = false;
 
+    this.createBumpers();
     this.createController();
 
     // Keyboard bonus (desktop testing) — unaffected by the controller swap
@@ -532,6 +584,7 @@ class MainScene extends Phaser.Scene {
     });
 
     this.physics.add.collider(this.ball, this.paddle, this.onPaddleHit, null, this);
+    this.physics.add.collider(this.ball, this.bumpers, this.onBumperHit, null, this);
   }
 
   elapsedSeconds() {
@@ -615,6 +668,26 @@ class MainScene extends Phaser.Scene {
     this.playHit();
   }
 
+  // Bumpers don't need custom reflection math — Arcade Physics' own
+  // circle-vs-circle separation against a static immovable body already
+  // gives a natural radial bounce, re-normalized to currentBallSpeed() by
+  // update()'s per-frame velocity scaling like every other bounce. Just a
+  // score bonus and a squash-tween for pinball-style feedback.
+  onBumperHit(ball, bumper) {
+    if (this.gameOver || !this.ballInPlay) return;
+
+    this.bumperHits += 1;
+    this.playHit();
+
+    this.tweens.add({
+      targets: bumper,
+      scale: 1.35,
+      duration: 90,
+      yoyo: true,
+      ease: "Quad.easeOut",
+    });
+  }
+
   missBall() {
     if (this.gameOver || !this.ballInPlay) return;
     this.ballInPlay = false;
@@ -657,9 +730,9 @@ class MainScene extends Phaser.Scene {
       }
     }
 
-    // Live score: survival time + rally hits.
+    // Live score: survival time + rally hits + bumper contacts.
     const elapsed = this.elapsedSeconds();
-    const liveScore = Math.floor(elapsed) * 2 + this.rallyHits * 10;
+    const liveScore = Math.floor(elapsed) * 2 + this.rallyHits * 10 + this.bumperHits * BUMPER_HIT_SCORE;
     this.scoreText.setText("SCORE " + String(liveScore).padStart(6, "0"));
   }
 
@@ -671,7 +744,7 @@ class MainScene extends Phaser.Scene {
 
     this.physics.pause();
 
-    const finalScore = Math.floor(this.elapsedSeconds()) * 2 + this.rallyHits * 10;
+    const finalScore = Math.floor(this.elapsedSeconds()) * 2 + this.rallyHits * 10 + this.bumperHits * BUMPER_HIT_SCORE;
 
     const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72);
     overlay.setDepth(10);
