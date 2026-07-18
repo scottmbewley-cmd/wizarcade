@@ -606,6 +606,21 @@ class MainScene extends Phaser.Scene {
     this.segmentSprites = [];
     this.colorIndex = 0; // index into NEON_PALETTE — see stepTick()
 
+    // scene.restart() (see retryBtn below) reuses this SAME MainScene
+    // instance rather than constructing a fresh one — Phaser tears down
+    // the old display list/tweens but leaves plain JS instance properties
+    // like this.foodSprite pointing at the now-destroyed GameObjects.
+    // Without clearing them here, spawnFood()'s "if (!this.foodSprite)"
+    // check sees a truthy-but-dead reference on every restart and takes
+    // the "reposition existing sprite" branch instead of creating a new
+    // one — the food coordinate (this.food) is still set correctly, but
+    // nothing ever appears on screen. Destroying + nulling both refs
+    // forces spawnFood() to recreate real sprites every round.
+    if (this.foodSprite) this.foodSprite.destroy();
+    if (this.foodGlowSprite) this.foodGlowSprite.destroy();
+    this.foodSprite = null;
+    this.foodGlowSprite = null;
+
     const startRow = Math.floor(GRID_ROWS / 2);
     const startCol = Math.floor(GRID_COLS / 2);
     this.snake = [];
