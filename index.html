@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>WizArcade</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
   <header class="wordmark">WizArcade</header>
@@ -12,6 +12,11 @@
   <main class="tile-grid" id="tile-grid"></main>
 
   <script>
+    // Discord webhook for the "Challenge" button's fire-and-forget announcement.
+    // Create it in Discord: wiz-arcade channel → Edit Channel → Integrations →
+    // Webhooks → New Webhook → Copy Webhook URL, then paste it below.
+    const CHALLENGE_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1526768840053227570/HiKzRRxW1dPnwQTEvMR4b59d7uFpFrnxXbPN5ZXPyjrOeFLLGlQDXr90_cuAp0ousdJ2";
+
     // Add a new game by adding one entry here — no other markup changes needed.
     const GAMES = [
       {
@@ -36,16 +41,88 @@
       }
     ];
 
+    async function sendChallenge(gameTitle, challenger, opponent) {
+      if (!CHALLENGE_WEBHOOK_URL) {
+        alert("Challenges aren't set up yet — no webhook URL configured.");
+        return;
+      }
+      try {
+        await fetch(CHALLENGE_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: `**${challenger}** has challenged **${opponent}** to a game of **${gameTitle}**! 🎮`
+          })
+        });
+      } catch (err) {
+        // Fire-and-forget: no retry, no UI error state.
+      }
+    }
+
+    // Slug used to deep-link into a specific game's challenge form, e.g.
+    // index.html?challenge=ricochet — derived from the games/<slug>/ path.
+    function slugFor(game) {
+      const match = game.href.match(/games\/([^/]+)\//);
+      return match ? match[1] : game.title.toLowerCase().replace(/\s+/g, "-");
+    }
+
+    function openChallengeForm(tile) {
+      const form = tile.querySelector(".challenge-form");
+      form.hidden = false;
+      tile.querySelector(".challenge-name").focus();
+    }
+
     const grid = document.getElementById("tile-grid");
     for (const game of GAMES) {
-      const a = document.createElement("a");
-      a.className = game.test ? "tile tile--test" : "tile";
-      a.href = game.href;
-      a.innerHTML = `
+      const tile = document.createElement("div");
+      tile.className = game.test ? "tile tile--test" : "tile";
+      tile.dataset.slug = slugFor(game);
+      tile.innerHTML = `
         <span class="tile-title">${game.title}</span>
         <span class="tile-subtitle">${game.subtitle}</span>
+        <div class="tile-actions">
+          <a class="btn btn-play" href="${game.href}">Play</a>
+          <button type="button" class="btn btn-challenge">Challenge</button>
+        </div>
+        <form class="challenge-form" hidden>
+          <input type="text" class="challenge-name" placeholder="Your name" maxlength="40" required>
+          <input type="text" class="challenge-opponent" placeholder="Who are you challenging?" maxlength="40" required>
+          <button type="submit" class="btn btn-send">Send Challenge</button>
+        </form>
       `;
-      grid.appendChild(a);
+      grid.appendChild(tile);
+
+      const challengeBtn = tile.querySelector(".btn-challenge");
+      const form = tile.querySelector(".challenge-form");
+
+      challengeBtn.addEventListener("click", () => {
+        if (form.hidden) {
+          openChallengeForm(tile);
+        } else {
+          form.hidden = true;
+        }
+      });
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const challenger = tile.querySelector(".challenge-name").value.trim();
+        const opponent = tile.querySelector(".challenge-opponent").value.trim();
+        if (!challenger || !opponent) return;
+        sendChallenge(game.title, challenger, opponent);
+        form.reset();
+        form.hidden = true;
+      });
+    }
+
+    // Deep link from Discord's "CHALLENGE" button: ?challenge=<game-slug>
+    // opens that game's challenge form directly instead of the picker view.
+    const requestedSlug = new URLSearchParams(location.search).get("challenge");
+    if (requestedSlug) {
+      const target = grid.querySelector(`.tile[data-slug="${CSS.escape(requestedSlug)}"]`);
+      if (target) {
+        openChallengeForm(target);
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
     }
   </script>
 </body>

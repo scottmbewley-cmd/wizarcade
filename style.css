@@ -43,15 +43,9 @@ body {
   border-radius: 14px;
   background: #17181f;
   border: 1px solid #2a2c38;
-  text-decoration: none;
   color: inherit;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
-}
-
-.tile:active {
-  background: #1f2130;
-  border-color: #4a4dff;
 }
 
 .tile-title {
@@ -62,5 +56,79 @@ body {
 .tile-subtitle {
   font-size: 0.85rem;
   color: #9095a5;
+}
+
+.tile-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn {
+  flex: 1;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.btn-play {
+  background: #4a4dff;
+  color: #f2f2f5;
+}
+
+.btn-play:active {
+  background: #6062ff;
+}
+
+.btn-challenge {
+  background: transparent;
+  color: #9aa0ff;
+  border-color: #3a3dcc;
+}
+
+.btn-challenge:active {
+  background: #1f2130;
+  border-color: #4a4dff;
+}
+
+.challenge-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.challenge-form[hidden] {
+  display: none;
+}
+
+.challenge-form input {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  background: #0c0d12;
+  border: 1px solid #2a2c38;
+  color: #f2f2f5;
+}
+
+.challenge-form input:focus {
+  outline: none;
+  border-color: #4a4dff;
+}
+
+.btn-send {
+  background: #2a2c38;
+  color: #f2f2f5;
+}
+
+.btn-send:active {
+  background: #34364a;
 }
 
