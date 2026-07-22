@@ -13,9 +13,10 @@
 
   <script>
     // Discord webhook for the "Challenge" button's fire-and-forget announcement.
-    // Create it in Discord: wiz-arcade channel → Edit Channel → Integrations →
-    // Webhooks → New Webhook → Copy Webhook URL, then paste it below.
-    const CHALLENGE_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1526768840053227570/HiKzRRxW1dPnwQTEvMR4b59d7uFpFrnxXbPN5ZXPyjrOeFLLGlQDXr90_cuAp0ousdJ2";
+    // Posts to #wiz-arcade-screen-shots-and-chatter (channel id 1529569338254819398) —
+    // a dedicated webhook, separate from the one used for game-build announcements
+    // in #wiz-arcade, so this can be redirected without touching that channel.
+    const CHALLENGE_WEBHOOK_URL = "https://discord.com/api/webhooks/1529574996698202172/q89F5ELjYNayL61hYJVJ-7KN_xJo6cv-GtQtcPgiivgfGs50TUhEHV75qud8U1UW96fj";
 
     // Add a new game by adding one entry here — no other markup changes needed.
     const GAMES = [
