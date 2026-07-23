@@ -28,25 +28,47 @@ const DUCK_TEX_H = 90; // taller than wide — leaves real headroom above the he
 const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
 // this.duck.y (and DUCK_RADIUS collision math) still tracks the body, not the hat poking up above it
 //
-// Retuned 2026-07-23 — the original pass (gravity 1500 / flap -430) only
-// bought about 62px of rise per flap in an 800-tall canvas, meaning it took
-// a fast, frantic tapping rhythm just to hold altitude, which read as "hard
-// to control." A stronger flap + gentler fall roughly doubles the rise per
-// tap and slows the terminal-velocity plummet, giving noticeably more
-// margin to react and correct without changing the core rules (still a
-// single fixed impulse, still constant gravity).
-const GRAVITY = 1300; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
-const FLAP_VELOCITY = -480; // px/s — fixed upward impulse, same magnitude every tap
-const MAX_FALL_SPEED = 620; // px/s terminal velocity clamp — also gentler now, so a missed flap near the ground is more recoverable
+// Retuning history, 2026-07-23:
+//  - Pass 1 (gravity 1500 / flap -430): only ~62px rise per flap, and the
+//    controller strip's onTap fired on pointer-UP (see createController()'s
+//    comment) so every flap also had real input lag. Read as "hard to
+//    control" / "reaction to the controls are bad."
+//  - Pass 2: fixed the input-lag bug (onMove edge-triggering, fires
+//    instantly on press) AND cranked the flap impulse up to -480 at the
+//    same time, on the theory that the arc itself needed to be bigger. That
+//    was wrong — once input actually responded instantly, the -480 impulse
+//    (previously partly masked by the lag/dropped taps) turned out to be a
+//    violent full-screen rocket on every single tap: "the speed of the flap
+//    is crazy fast," nobody could clear 4 gates. Instant response and a
+//    strong impulse compound each other; fixing the lag meant the impulse
+//    needed to come DOWN, not stay put.
+//  - Pass 3: dropped the impulse to -330 and raised gravity to 1400, but a
+//    scripted bot that flaps as soon as it's merely falling (not waiting
+//    for a full descent) still climbed straight into the ceiling — because
+//    flap SETS velocity outright rather than adding to it, tapping again
+//    before a real fall has happened doesn't "correct" the arc, it re-
+//    launches from wherever the duck already is, so anyone who taps a
+//    little eager (which is most first-time players — they see themselves
+//    dip and immediately tap again) ratchets upward every cycle instead of
+//    settling into a stable rhythm. That's very likely the actual mechanism
+//    behind "no one can get past 4 gates."
+//  - Pass 4 (current): impulse cut further still, gravity raised again so a
+//    premature tap decays fast and doesn't compound — small enough that
+//    even an over-eager tapping rhythm stays roughly level instead of
+//    climbing every cycle.
+const GRAVITY = 1550; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
+const FLAP_VELOCITY = -260; // px/s — fixed upward impulse, same magnitude every tap (~22px rise — a small nudge)
+const MAX_FALL_SPEED = 420; // px/s terminal velocity clamp — keeps a missed flap near the ground recoverable
 const ROTATION_VELOCITY_DIVISOR = 7; // duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
 const ROTATION_MIN_DEG = -25;
 const ROTATION_MAX_DEG = 90;
 
-// --- Pipes ---
+// --- Pipes --- widened/slowed alongside the gentler flap above — small
+// precise taps need room to place the duck and time to react.
 const PIPE_WIDTH = 76;
-const PIPE_GAP = 220; // constant gap size — never varies pipe to pipe (widened slightly alongside the physics retune above)
-const PIPE_SPACING = 270; // constant horizontal distance between consecutive pipe pairs
-const PIPE_SPEED = 175; // px/s — constant scroll speed, no ramp over time
+const PIPE_GAP = 260; // constant gap size — never varies pipe to pipe
+const PIPE_SPACING = 300; // constant horizontal distance between consecutive pipe pairs
+const PIPE_SPEED = 145; // px/s — constant scroll speed, no ramp over time
 const PIPE_CAP_HEIGHT = 26;
 const GAP_MARGIN = 100; // min distance from the ceiling or the ground band to the gap's near edge
 
