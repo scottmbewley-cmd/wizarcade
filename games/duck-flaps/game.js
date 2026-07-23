@@ -195,13 +195,20 @@ const FOOD_BOB_FREQ = 1.6; // bob cycles/sec
 // the pipes) and setTint()'d per balloon from a bright palette, so no two
 // spawns need look alike.
 const BALLOON_RADIUS = 16; // collision circle
-const BALLOON_RISE_SPEED = 130; // px/s upward, before speedMultiplier/difficultyMultiplier
+// Rise speed slowed down (was 130) per feedback — more time to see one
+// coming and react.
+const BALLOON_RISE_SPEED = 95; // px/s upward, before speedMultiplier/difficultyMultiplier
 const BALLOON_SWAY_AMPLITUDE = 14; // px, horizontal wobble while rising
 const BALLOON_SWAY_FREQ = 0.7; // sway cycles/sec
 const BALLOON_PULSE_AMPLITUDE = 0.05; // +/- scale, a gentle "breathing" pulse so the baked highlight shimmers
 const BALLOON_PULSE_FREQ = 1.1; // pulse cycles/sec
-const BALLOON_SPAWN_INTERVAL_MIN = 1600; // ms
-const BALLOON_SPAWN_INTERVAL_MAX = 2800; // ms
+// Spawn interval widened (was 1600-2800) alongside the slower rise above —
+// rise speed down + spawn interval unchanged would mean MORE balloon
+// groups in flight at once (each one takes longer to clear the screen),
+// which is the opposite of "there needs to be a route possible." Wider
+// gaps between spawns keep roughly one group near the duck at a time.
+const BALLOON_SPAWN_INTERVAL_MIN = 2400; // ms
+const BALLOON_SPAWN_INTERVAL_MAX = 4000; // ms
 const BALLOON_BUNCH_CHANCE = 0.35; // chance a spawn event releases a bunch instead of a single balloon
 const BALLOON_BUNCH_MIN = 2;
 const BALLOON_BUNCH_MAX = 3;
@@ -211,15 +218,19 @@ const BALLOON_COLOR_PALETTE = [0xff4d6d, 0xffb020, 0xffe066, 0x4dd8ff, 0x7ee08c,
 // already somewhere on screen — otherwise there's no travel time for the
 // balloon to both scroll left AND rise up into the duck's actual altitude
 // before it's already level with (or past) the duck, which is why they
-// used to mostly do nothing. The offset range is tuned so that by the time
-// a balloon's x has scrolled from spawn to DUCK_X, it has also risen from
-// below the screen up into a typical mid-flight altitude band — and this
-// balance holds at ANY difficulty stage, since worldSpeed and
-// BALLOON_RISE_SPEED are both scaled by the same speedMultiplier/
-// difficultyMultiplier (their ratio, which is what determines arrival
-// height, never changes).
-const BALLOON_SPAWN_X_MIN_OFFSET = 140;
-const BALLOON_SPAWN_X_MAX_OFFSET = 280;
+// used to mostly do nothing. The offset range determines both WHEN a
+// balloon crosses DUCK_X and, since it's still rising the whole time, how
+// HIGH it's gotten by then — widened (was 140-280, a 140px spread) per
+// feedback to "mix up the launch locations": a bigger spread means a much
+// wider variety of arrival heights/timing spawn to spawn, instead of most
+// balloons converging on roughly the same altitude — which is also what
+// actually guarantees a route stays open, since two different arrival
+// heights can't both block the same gap. This balance holds at ANY
+// difficulty stage, since worldSpeed and BALLOON_RISE_SPEED are both
+// scaled by the same speedMultiplier/difficultyMultiplier (their ratio,
+// which is what determines arrival height, never changes).
+const BALLOON_SPAWN_X_MIN_OFFSET = 100;
+const BALLOON_SPAWN_X_MAX_OFFSET = 380;
 
 // --- Ground ---
 const GROUND_HEIGHT = 70;
@@ -570,61 +581,44 @@ function drawFoodTexture(gfx, key) {
 // A balloon, baked in grayscale (base/shadow/highlight as lightness only)
 // so setTint() at spawn time (see spawnBalloon()) gives it a clean, glossy
 // color — same runtime-tint convention as the pipes. Hazard, unlocked at
-// gate BALLOON_START_GATE. Shape is a real balloon silhouette (widest
-// close to the top, tapering to a narrow neck at the knot — a plain
-// symmetric ellipse read as a ball, not a balloon), built from a closed
-// 4-segment quadratic path via fillQuadPath() since Phaser's Graphics has
-// no ellipse primitive that isn't top/bottom-symmetric.
+// gate BALLOON_START_GATE. (A later pass tried a proper "widest near the
+// top" teardrop silhouette here — reverted per feedback, this plain
+// ellipse read better in practice.)
 function drawBalloonTexture(gfx, key) {
   gfx.clear();
-  const bodyH = BALLOON_RADIUS * 2.7; // top apex to the narrow base, excluding the knot/string
-  const halfW = BALLOON_RADIUS * 1.15; // widest point, half-width
-  const w = halfW * 2 + 8;
-  const h = bodyH + BALLOON_RADIUS * 1.3;
+  const w = BALLOON_RADIUS * 2.2;
+  const h = BALLOON_RADIUS * 2.9;
   const cx = w / 2;
-  const topY = 4;
-  const baseY = topY + bodyH;
-  const wideY = topY + bodyH * 0.4; // the bulge sits in the upper half, not dead center
+  const cy = h * 0.36;
+  const bodyW = w;
+  const bodyH = h * 0.68;
 
   // String
   gfx.lineStyle(1.2, 0x8a8a8a, 1);
   gfx.beginPath();
-  gfx.moveTo(cx, baseY + BALLOON_RADIUS * 0.32);
-  gfx.lineTo(cx, h - 3);
+  gfx.moveTo(cx, cy + bodyH * 0.56);
+  gfx.lineTo(cx, h * 0.98);
   gfx.strokePath();
 
   gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
 
   // Knot
   gfx.fillStyle(0xd8d8d8, 1);
-  gfx.fillTriangle(cx - 3, baseY - 2, cx + 3, baseY - 2, cx, baseY + BALLOON_RADIUS * 0.32);
-  gfx.strokeTriangle(cx - 3, baseY - 2, cx + 3, baseY - 2, cx, baseY + BALLOON_RADIUS * 0.32);
+  gfx.fillTriangle(cx - 3.2, cy + bodyH * 0.44, cx + 3.2, cy + bodyH * 0.44, cx, cy + bodyH * 0.58);
+  gfx.strokeTriangle(cx - 3.2, cy + bodyH * 0.44, cx + 3.2, cy + bodyH * 0.44, cx, cy + bodyH * 0.58);
 
-  // Body — closed loop: base -> left bulge -> top apex -> right bulge -> base
+  // Body (mid gray base)
   gfx.fillStyle(0xd8d8d8, 1);
-  fillQuadPath(
-    gfx,
-    [
-      [cx, baseY],
-      [cx - halfW * 0.85, baseY - bodyH * 0.08],
-      [cx - halfW, wideY],
-      [cx - halfW * 1.02, topY + bodyH * 0.14],
-      [cx, topY],
-      [cx + halfW * 1.02, topY + bodyH * 0.14],
-      [cx + halfW, wideY],
-      [cx + halfW * 0.85, baseY - bodyH * 0.08],
-      [cx, baseY],
-    ],
-    8
-  );
+  gfx.fillEllipse(cx, cy, bodyW, bodyH);
+  gfx.strokeEllipse(cx, cy, bodyW, bodyH);
 
-  // Shadow, lower-right
-  gfx.fillStyle(0x8a8a8a, 0.55);
-  gfx.fillEllipse(cx + halfW * 0.32, wideY + bodyH * 0.22, halfW * 0.85, bodyH * 0.42);
+  // Shadow, bottom-right
+  gfx.fillStyle(0x8a8a8a, 0.6);
+  gfx.fillEllipse(cx + bodyW * 0.18, cy + bodyH * 0.2, bodyW * 0.55, bodyH * 0.5);
 
-  // Glossy highlight, upper-left
-  gfx.fillStyle(0xffffff, 0.9);
-  gfx.fillEllipse(cx - halfW * 0.38, wideY - bodyH * 0.16, halfW * 0.5, bodyH * 0.24);
+  // Glossy highlight, top-left
+  gfx.fillStyle(0xffffff, 0.85);
+  gfx.fillEllipse(cx - bodyW * 0.22, cy - bodyH * 0.28, bodyW * 0.32, bodyH * 0.22);
 
   gfx.generateTexture(key, w, h);
 }
