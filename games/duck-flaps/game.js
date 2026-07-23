@@ -52,13 +52,21 @@ const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center
 //    dip and immediately tap again) ratchets upward every cycle instead of
 //    settling into a stable rhythm. That's very likely the actual mechanism
 //    behind "no one can get past 4 gates."
-//  - Pass 4 (current): impulse cut further still, gravity raised again so a
-//    premature tap decays fast and doesn't compound — small enough that
-//    even an over-eager tapping rhythm stays roughly level instead of
-//    climbing every cycle.
-const GRAVITY = 1550; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
-const FLAP_VELOCITY = -260; // px/s — fixed upward impulse, same magnitude every tap (~22px rise — a small nudge)
-const MAX_FALL_SPEED = 420; // px/s terminal velocity clamp — keeps a missed flap near the ground recoverable
+//  - Pass 4: impulse cut further still, gravity raised again so a premature
+//    tap decays fast and doesn't compound — fixed the runaway-climb
+//    problem, but at gravity 1550 the duck falls fast enough that holding
+//    a stable altitude needs a tap roughly every 335ms (~3/sec) just to
+//    break even — "gravity is too high, the bird requires too many taps to
+//    stay stable."
+//  - Pass 5 (current): gravity roughly halved (900), flap impulse left
+//    alone — the duck now hangs in the air much longer per flap, so
+//    holding altitude needs a tap only around every 580ms (~1.7/sec).
+//    Rise per flap (~38px) and the anti-runaway-climb margin from Pass 4
+//    are both still intact; this only changes how long it floats between
+//    taps, not how far a single tap moves it.
+const GRAVITY = 900; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
+const FLAP_VELOCITY = -260; // px/s — fixed upward impulse, same magnitude every tap (~38px rise at this gravity)
+const MAX_FALL_SPEED = 380; // px/s terminal velocity clamp — keeps a missed flap near the ground recoverable
 const ROTATION_VELOCITY_DIVISOR = 7; // target duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
 const ROTATION_MIN_DEG = -25;
 const ROTATION_MAX_DEG = 90;
