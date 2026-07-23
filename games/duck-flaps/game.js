@@ -21,23 +21,32 @@ const GAME_HEIGHT = 800;
 
 // --- Duck ---
 const DUCK_X = 150; // fixed x position — only the pipes move horizontally
-const DUCK_RADIUS = 18; // collision circle, slightly tighter than the sprite's visual bounds
-const DUCK_TEX_W = 54;
-const DUCK_TEX_H = 58; // taller than wide — leaves headroom above the head for the beanie
-const DUCK_ORIGIN_Y = 0.64; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
+const DUCK_RADIUS = 17; // collision circle, slightly tighter than the sprite's visual bounds
+const DUCK_TEX_W = 62;
+const DUCK_TEX_H = 90; // taller than wide — leaves real headroom above the head for the beanie (68 wasn't
+// enough: the hat's dome/pom got clipped off at the top edge of the texture canvas, see drawDuckTexture())
+const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
 // this.duck.y (and DUCK_RADIUS collision math) still tracks the body, not the hat poking up above it
-const GRAVITY = 1500; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
-const FLAP_VELOCITY = -430; // px/s — fixed upward impulse, same magnitude every tap
-const MAX_FALL_SPEED = 720; // px/s terminal velocity clamp, purely to keep a laggy frame from tunneling through a pipe
-const ROTATION_VELOCITY_DIVISOR = 6; // duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
+//
+// Retuned 2026-07-23 — the original pass (gravity 1500 / flap -430) only
+// bought about 62px of rise per flap in an 800-tall canvas, meaning it took
+// a fast, frantic tapping rhythm just to hold altitude, which read as "hard
+// to control." A stronger flap + gentler fall roughly doubles the rise per
+// tap and slows the terminal-velocity plummet, giving noticeably more
+// margin to react and correct without changing the core rules (still a
+// single fixed impulse, still constant gravity).
+const GRAVITY = 1300; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
+const FLAP_VELOCITY = -480; // px/s — fixed upward impulse, same magnitude every tap
+const MAX_FALL_SPEED = 620; // px/s terminal velocity clamp — also gentler now, so a missed flap near the ground is more recoverable
+const ROTATION_VELOCITY_DIVISOR = 7; // duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
 const ROTATION_MIN_DEG = -25;
 const ROTATION_MAX_DEG = 90;
 
 // --- Pipes ---
 const PIPE_WIDTH = 76;
-const PIPE_GAP = 200; // constant gap size — never varies pipe to pipe
-const PIPE_SPACING = 260; // constant horizontal distance between consecutive pipe pairs
-const PIPE_SPEED = 190; // px/s — constant scroll speed, no ramp over time
+const PIPE_GAP = 220; // constant gap size — never varies pipe to pipe (widened slightly alongside the physics retune above)
+const PIPE_SPACING = 270; // constant horizontal distance between consecutive pipe pairs
+const PIPE_SPEED = 175; // px/s — constant scroll speed, no ramp over time
 const PIPE_CAP_HEIGHT = 26;
 const GAP_MARGIN = 100; // min distance from the ceiling or the ground band to the gap's near edge
 
@@ -117,64 +126,152 @@ const COLOR_GROUND_DARK = 0x6b4f2a;
 const COLOR_REED = 0x2c5a4a;
 
 // Matches the supplied logo (assets/duck-flaps-logo.png): a yellow duck
-// wearing a blue beanie. A separate head circle (rather than folding the
-// beak/eye straight onto the body ellipse, as the very first pass did)
-// gives the beanie a clean, round surface to actually sit on.
+// wearing a chunky knit beanie. Redrawn 2026-07-23 (second pass) — the
+// first redraw made the dome/cuff far too large relative to the head (they
+// dipped down past head-center into the eye/beak, and the dome's top
+// literally clipped off the edge of the texture canvas), which is why it
+// rendered as a lopsided blue smear rather than a hat. This version sizes
+// everything off headR with margins actually checked against the canvas
+// bounds, and keeps body-part SIZES tied to w (not h) so the taller canvas
+// (added for hat headroom) doesn't also inflate the body.
 function drawDuckTexture(gfx, key, w, h) {
   gfx.clear();
   const cx = w / 2;
   const bodyCy = h * DUCK_ORIGIN_Y;
-  const headCx = cx + w * 0.1;
-  const headCy = bodyCy - h * 0.26;
-  const headR = w * 0.3;
+  const headR = w * 0.24;
+  const headCx = cx + w * 0.08;
+  const headCy = bodyCy - headR * 1.7;
+
+  const yellow = 0xffcf3d;
+  const yellowLight = 0xffe480;
+  const yellowShade = 0xe0a827;
+  const wingColor = 0xf0b429;
+  const wingShade = 0xd4941a;
+  const beakColor = 0xff7f27;
+  const beakShade = 0xe2600f;
 
   // Tail
-  gfx.fillStyle(0xffd84d, 1);
+  gfx.fillStyle(yellow, 1);
   gfx.fillTriangle(
-    cx - w * 0.32, bodyCy,
-    cx - w * 0.48, bodyCy - h * 0.12,
-    cx - w * 0.48, bodyCy + h * 0.1
+    cx - w * 0.3, bodyCy,
+    cx - w * 0.48, bodyCy - w * 0.13,
+    cx - w * 0.48, bodyCy + w * 0.11
   );
 
   // Body
-  gfx.fillStyle(0xffd84d, 1);
-  gfx.fillEllipse(cx, bodyCy, w * 0.74, h * 0.4);
+  gfx.fillStyle(yellow, 1);
+  gfx.fillEllipse(cx, bodyCy, w * 0.8, w * 0.58);
 
-  // Belly shading
-  gfx.fillStyle(0xffe98a, 0.9);
-  gfx.fillEllipse(cx - w * 0.04, bodyCy + h * 0.06, w * 0.44, h * 0.22);
+  // Underside shading (soft contact shadow along the bottom edge)
+  gfx.fillStyle(yellowShade, 0.35);
+  gfx.fillEllipse(cx, bodyCy + w * 0.18, w * 0.66, w * 0.26);
 
-  // Wing
-  gfx.fillStyle(0xe0a92e, 1);
-  gfx.fillEllipse(cx - w * 0.08, bodyCy - h * 0.02, w * 0.3, h * 0.2);
+  // Belly highlight — low-center, clear of the wing (below), so the two
+  // don't blend into one muddy patch the way the first pass did.
+  gfx.fillStyle(yellowLight, 0.85);
+  gfx.fillEllipse(cx - w * 0.04, bodyCy + w * 0.13, w * 0.32, w * 0.2);
+
+  // Wing — upper-back placement (clear of the belly highlight), a visibly
+  // darker fill than the body plus its own outline so it actually reads as
+  // a separate feature instead of a same-hue smudge, with two short crease
+  // lines for feather detail.
+  gfx.fillStyle(wingColor, 1);
+  gfx.fillEllipse(cx - w * 0.17, bodyCy - w * 0.1, w * 0.36, w * 0.24);
+  gfx.lineStyle(1.5, wingShade, 0.9);
+  gfx.strokeEllipse(cx - w * 0.17, bodyCy - w * 0.1, w * 0.36, w * 0.24);
+  gfx.beginPath();
+  gfx.moveTo(cx - w * 0.28, bodyCy - w * 0.16);
+  gfx.lineTo(cx - w * 0.08, bodyCy - w * 0.06);
+  gfx.moveTo(cx - w * 0.28, bodyCy - w * 0.05);
+  gfx.lineTo(cx - w * 0.08, bodyCy);
+  gfx.strokePath();
 
   // Head
-  gfx.fillStyle(0xffd84d, 1);
+  gfx.fillStyle(yellow, 1);
   gfx.fillCircle(headCx, headCy, headR);
+  gfx.fillStyle(yellowLight, 0.55);
+  gfx.fillCircle(headCx - headR * 0.22, headCy - headR * 0.1, headR * 0.55);
 
-  // Beak
-  gfx.fillStyle(0xff7a1f, 1);
+  // Beak — upper + slightly darker lower mandible for a bit of thickness
+  gfx.fillStyle(beakColor, 1);
   gfx.fillTriangle(
-    headCx + headR * 0.5, headCy - headR * 0.08,
-    headCx + headR * 1.2, headCy + headR * 0.16,
-    headCx + headR * 0.5, headCy + headR * 0.44
+    headCx + headR * 0.48, headCy - headR * 0.16,
+    headCx + headR * 1.22, headCy + headR * 0.12,
+    headCx + headR * 0.48, headCy + headR * 0.24
+  );
+  gfx.fillStyle(beakShade, 1);
+  gfx.fillTriangle(
+    headCx + headR * 0.48, headCy + headR * 0.1,
+    headCx + headR * 1.1, headCy + headR * 0.16,
+    headCx + headR * 0.48, headCy + headR * 0.4
   );
 
-  // Eye
+  // Eye — white, black pupil, tiny highlight dot for life
   gfx.fillStyle(0xffffff, 1);
-  gfx.fillCircle(headCx + headR * 0.16, headCy - headR * 0.22, headR * 0.32);
+  gfx.fillCircle(headCx + headR * 0.1, headCy - headR * 0.28, headR * 0.34);
   gfx.fillStyle(0x1a1a1a, 1);
-  gfx.fillCircle(headCx + headR * 0.22, headCy - headR * 0.22, headR * 0.16);
+  gfx.fillCircle(headCx + headR * 0.17, headCy - headR * 0.26, headR * 0.17);
+  gfx.fillStyle(0xffffff, 0.9);
+  gfx.fillCircle(headCx + headR * 0.12, headCy - headR * 0.33, headR * 0.06);
 
-  // Beanie — dome first, then a brim band drawn on top to give it a crisp
-  // bottom edge where it meets the head, then a small pom on top.
-  const hatCy = headCy - headR * 0.78;
-  gfx.fillStyle(0x2f6fd6, 1);
-  gfx.fillEllipse(headCx - headR * 0.02, hatCy, headR * 1.7, headR * 1.15);
-  gfx.fillStyle(0x1f4fa8, 1);
-  gfx.fillRoundedRect(headCx - headR * 0.88, headCy - headR * 0.92, headR * 1.76, headR * 0.34, headR * 0.15);
-  gfx.fillStyle(0xf4f7fb, 0.95);
-  gfx.fillCircle(headCx - headR * 0.02, hatCy - headR * 0.62, headR * 0.22);
+  // --- Beanie ---
+  // All offsets measured up from headCy in headR units so the fit stays
+  // correct regardless of head size: cuff sits just above the eye (eye is
+  // at -0.28headR), dome sits above the cuff, pom sits above the dome —
+  // never overlapping the face, never running past the canvas edge.
+  const hatMain = 0x3d7fe0;
+  const hatShade = 0x2456a8;
+  const hatHighlight = 0x6fa8f0;
+  const hatCx = headCx - headR * 0.04;
+
+  const cuffBottomY = headCy - headR * 0.65;
+  const cuffH = headR * 0.45;
+  const cuffTopY = cuffBottomY - cuffH;
+  const cuffHalfW = headR * 1.15;
+
+  const domeRX = headR * 0.95;
+  const domeRY = headR * 0.58;
+  const domeCy = cuffTopY + headR * 0.2 - domeRY; // dips slightly into the cuff band for a seamless join
+
+  // Dome, drawn first so the cuff (below) and highlight/ribs (above) both
+  // layer cleanly on top of it.
+  gfx.fillStyle(hatMain, 1);
+  gfx.fillEllipse(hatCx, domeCy, domeRX * 2, domeRY * 2);
+
+  // Ribbed knit texture — a fan of slightly darker lines converging toward
+  // the crown, the classic knit-cap cue a flat cap doesn't have.
+  gfx.lineStyle(Math.max(1, headR * 0.08), hatShade, 0.4);
+  for (let i = -2; i <= 2; i++) {
+    const spread = i * domeRX * 0.32;
+    gfx.beginPath();
+    gfx.moveTo(hatCx + spread * 0.25, domeCy - domeRY * 0.75);
+    gfx.lineTo(hatCx + spread, cuffTopY);
+    gfx.strokePath();
+  }
+
+  // Soft sheen along the upper-left of the dome for roundness
+  gfx.fillStyle(hatHighlight, 0.4);
+  gfx.fillEllipse(hatCx - domeRX * 0.32, domeCy - domeRY * 0.3, domeRX * 0.7, domeRY * 0.5);
+
+  // Thick folded cuff — wraps the whole head like a real knit brim, not a
+  // thin peaked band jutting off to one side.
+  gfx.fillStyle(hatShade, 1);
+  gfx.fillRoundedRect(hatCx - cuffHalfW, cuffTopY, cuffHalfW * 2, cuffH, cuffH * 0.5);
+  gfx.fillStyle(hatMain, 1);
+  gfx.fillRoundedRect(hatCx - cuffHalfW, cuffTopY + cuffH * 0.34, cuffHalfW * 2, cuffH * 0.5, cuffH * 0.25);
+  gfx.fillStyle(hatHighlight, 0.35);
+  gfx.fillRoundedRect(hatCx - cuffHalfW * 0.85, cuffTopY + cuffH * 0.1, cuffHalfW * 1.1, cuffH * 0.16, cuffH * 0.08);
+
+  // Fluffy multi-lobe pom-pom on top, instead of one flat circle
+  const pomCx = hatCx;
+  const pomCy = domeCy - domeRY * 0.95;
+  const pomR = headR * 0.27;
+  gfx.fillStyle(0xeef3fa, 1);
+  [[-0.55, 0.15], [0.55, 0.15], [0, -0.35], [-0.3, -0.05], [0.3, -0.05]].forEach(([ox, oy]) => {
+    gfx.fillCircle(pomCx + ox * pomR, pomCy + oy * pomR, pomR * 0.62);
+  });
+  gfx.fillStyle(0xd7e0ee, 0.6);
+  gfx.fillCircle(pomCx + pomR * 0.15, pomCy + pomR * 0.2, pomR * 0.4);
 
   gfx.generateTexture(key, w, h);
 }
@@ -276,8 +373,25 @@ class MainScene extends Phaser.Scene {
   }
 
   // Wires up the shared /controller/controller.js module. This is the
-  // suite's first tap-only game — no directions needed, just tap: true —
-  // see controller.js's header comment for the onTap payload shape.
+  // suite's first tap-only game — no directions needed.
+  //
+  // Deliberately NOT using onTap() here, even though tap:true is set (kept
+  // only for its visual tap-flash feedback on the strip). controller.js
+  // only resolves a gesture as a "tap" — and fires onTap — on POINTER
+  // *UP*, after checking it was short and still enough
+  // (tapMaxDurationMs/tapMaxMovementPx). For a twitch-reflex game like this
+  // one, that's real, perceptible input lag on every single flap, and any
+  // tap that runs a little long or drifts a few px (extremely common
+  // mid-panic on a phone) gets silently dropped rather than flapping late —
+  // exactly what read as "the reaction to the controls are bad."
+  //
+  // onMove(), by contrast, fires immediately from the strip's own
+  // pointerdown handler (see controller.js's _onPointerDown ->
+  // _processPosition), with data.active true on that very first event —
+  // no duration/movement gate at all. Edge-triggering off active going
+  // false->true gives an instant, unmissable flap on press, and (since it
+  // only fires once per press->release cycle) still respects "one flap per
+  // tap," not an auto-repeating flap for as long as the strip is held.
   createController() {
     if (this.wizController) {
       this.wizController.destroy(); // guard against duplicate strips/icons on scene.restart()
@@ -297,7 +411,11 @@ class MainScene extends Phaser.Scene {
       maxHeight: 300,
     });
 
-    this.wizController.onTap(() => this.flap());
+    this.controllerWasActive = false;
+    this.wizController.onMove((data) => {
+      if (data.active && !this.controllerWasActive) this.flap();
+      this.controllerWasActive = data.active;
+    });
   }
 
   // Browser autoplay policy: audio can only start after a genuine user
