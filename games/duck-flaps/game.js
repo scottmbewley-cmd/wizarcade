@@ -9,12 +9,22 @@
 // Unlike Ricochet/Star Invaders (steering), this is the suite's first
 // tap-to-act game: a classic Flappy Bird clone. The duck is pinned on the
 // x-axis; gravity constantly accelerates it downward; a tap gives it a
-// fixed upward velocity impulse. Pipes scroll left at a constant speed with
-// a constant gap size — only the gap's vertical position is randomized per
-// pipe, and there is no difficulty ramp over time. Collision handling is
-// plain per-frame geometry (circle-vs-rect against each pipe, plus simple
-// ground/ceiling y checks) rather than Arcade Physics — nothing here needs
-// engine-driven bounce/separation, just an instant, unambiguous hit test.
+// fixed upward velocity impulse — that base flap feel never changes over a
+// run, no matter how far the score climbs. Pipes scroll left at a constant
+// base speed with a constant gap size — only the gap's vertical position
+// (and, from gate 20 on, whether a bird is inbound) is randomized per gate.
+// Collision handling is plain per-frame geometry (circle/AABB checks against
+// each pipe/food/bird, plus simple ground/ceiling y checks) rather than
+// Arcade Physics — nothing here needs engine-driven bounce/separation, just
+// an instant, unambiguous hit test.
+//
+// Progression is gate-count-driven, not time-driven — see the
+// STAGE_GATES/FOOD_START_GATE/BIRD_START_GATE/RAMP_START_GATE block and
+// MainScene.difficultyMultiplier(): gates 0-9 are pipes only; 10-19 add
+// optional bonus food; 20-29 add birds flying the opposite direction
+// (avoid, same as a pipe); 30+ ramps the world-scroll speed up further
+// every additional 10 gates. A checkpoint flash announces every 10-gate
+// boundary from the very start.
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -128,13 +138,53 @@ const WING_HINGE_X = -20 * SVG_SCALE; // duck-container-local placement (relativ
 const WING_HINGE_Y = -5 * SVG_SCALE;
 
 // --- Pipes --- widened/slowed alongside the gentler flap above — small
-// precise taps need room to place the duck and time to react.
+// precise taps need room to place the duck and time to react. PIPE_SPEED is
+// the BASE speed — see difficultyMultiplier() below for the gate-30+ ramp
+// on top of it; the gap size itself never changes.
 const PIPE_WIDTH = 76;
 const PIPE_GAP = 260; // constant gap size — never varies pipe to pipe
 const PIPE_SPACING = 300; // constant horizontal distance between consecutive pipe pairs
-const PIPE_SPEED = 145; // px/s — constant scroll speed, no ramp over time
+const PIPE_SPEED = 145; // px/s base scroll speed, before difficultyMultiplier()
 const PIPE_CAP_HEIGHT = 26;
 const GAP_MARGIN = 100; // min distance from the ceiling or the ground band to the gap's near edge
+
+// --- Progression: gate-count-driven stages, not time-driven (see
+// currentStage()/difficultyMultiplier() on MainScene). Gates 0-9 are plain
+// pipes, same as the very first version of this game. Gates 10-19 add
+// flying food (optional bonus points). Gates 20-29 add birds flying the
+// OPPOSITE direction from the pipes — avoid them like a pipe, they end the
+// run on contact. From gate 30 on, the whole world's scroll speed (pipes,
+// food, birds, ground) ramps up a bit further every additional 10 gates —
+// flap physics (gravity/impulse) are deliberately NOT part of that ramp, so
+// the controls stay exactly as learnable as ever; only the pace of
+// obstacles increases. A checkpoint flash announces every 10-gate boundary
+// from the very start, whether or not that boundary unlocks anything new.
+const STAGE_GATES = 10;
+const FOOD_START_GATE = 10;
+const BIRD_START_GATE = 20;
+const RAMP_START_GATE = 30;
+const DIFFICULTY_RAMP_STEP = 0.12; // world-scroll speed multiplier added per extra STAGE_GATES beyond RAMP_START_GATE
+
+// --- Scoring ---
+const PIPE_SCORE = 10; // points per gate passed — a flat +1 looked anemic against the 6-digit "SCORE 000000" display
+const FOOD_SCORE = 5; // bonus points per food item collected
+
+// --- Food (unlocked at gate FOOD_START_GATE) — a bonus pickup centered in
+// some pipe gaps, never required to keep playing.
+const FOOD_SPAWN_CHANCE = 0.65; // per eligible pipe pair, chance a food item spawns in its gap
+const FOOD_RADIUS = 12; // collision circle
+const FOOD_BOB_AMPLITUDE = 6; // px, a gentle vertical bob for a "flying" feel
+const FOOD_BOB_FREQ = 1.6; // bob cycles/sec
+
+// --- Birds (unlocked at gate BIRD_START_GATE) — spawned off the left edge
+// on their own timer (not tied to pipe spacing, since they move the
+// opposite way) and fly RIGHTWARD, exiting off the right edge.
+const BIRD_RADIUS = 14; // collision circle
+const BIRD_BASE_SPEED = 160; // px/s rightward, before speedMultiplier/difficultyMultiplier
+const BIRD_SPAWN_INTERVAL_MIN = 1700; // ms
+const BIRD_SPAWN_INTERVAL_MAX = 3000; // ms
+const BIRD_BOB_AMPLITUDE = 10;
+const BIRD_BOB_FREQ = 1.2;
 
 // --- Ground ---
 const GROUND_HEIGHT = 70;
@@ -428,6 +478,63 @@ function drawScanlineTexture(gfx, key) {
   gfx.generateTexture(key, 4, 4);
 }
 
+// A simple berry — collectible bonus food, unlocked at gate FOOD_START_GATE.
+function drawFoodTexture(gfx, key) {
+  gfx.clear();
+  const size = FOOD_RADIUS * 2 + 8;
+  const cx = size / 2;
+  const cy = size / 2 + 2;
+
+  gfx.lineStyle(1.6, 0x6b4226, 1);
+  gfx.beginPath();
+  gfx.moveTo(cx, cy - FOOD_RADIUS * 0.75);
+  gfx.lineTo(cx + 3, cy - FOOD_RADIUS * 1.15);
+  gfx.strokePath();
+
+  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
+  gfx.fillStyle(0x4a9c4f, 1);
+  gfx.fillEllipse(cx + 7, cy - FOOD_RADIUS * 1.1, 10, 5);
+  gfx.strokeEllipse(cx + 7, cy - FOOD_RADIUS * 1.1, 10, 5);
+
+  gfx.fillStyle(0xe4483c, 1);
+  gfx.fillCircle(cx, cy, FOOD_RADIUS);
+  gfx.strokeCircle(cx, cy, FOOD_RADIUS);
+  gfx.fillStyle(0xb02f26, 0.45);
+  gfx.fillCircle(cx + FOOD_RADIUS * 0.3, cy + FOOD_RADIUS * 0.35, FOOD_RADIUS * 0.55);
+  gfx.fillStyle(0xffffff, 0.55);
+  gfx.fillCircle(cx - FOOD_RADIUS * 0.32, cy - FOOD_RADIUS * 0.32, FOOD_RADIUS * 0.26);
+
+  gfx.generateTexture(key, size, size);
+}
+
+// A small dark bird-in-flight silhouette — hazard, unlocked at gate
+// BIRD_START_GATE, flies rightward (see updateBirds()) so the beak/eye
+// point right, the direction it actually travels.
+function drawBirdTexture(gfx, key) {
+  gfx.clear();
+  const w = BIRD_RADIUS * 3.2;
+  const h = BIRD_RADIUS * 2.2;
+  const cx = w / 2;
+  const cy = h / 2;
+
+  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
+  gfx.fillStyle(0x5c211d, 1);
+  fillQuadPath(gfx, [[cx, cy], [cx - w * 0.22, cy - h * 0.55], [cx - w * 0.44, cy - h * 0.05]], 6);
+  fillQuadPath(gfx, [[cx, cy], [cx + w * 0.22, cy - h * 0.55], [cx + w * 0.44, cy - h * 0.05]], 6);
+
+  gfx.fillStyle(0x7a2e28, 1);
+  gfx.fillEllipse(cx, cy + h * 0.08, w * 0.34, h * 0.4);
+  gfx.strokeEllipse(cx, cy + h * 0.08, w * 0.34, h * 0.4);
+
+  gfx.fillStyle(0xe8b23d, 1);
+  gfx.fillTriangle(cx + w * 0.15, cy, cx + w * 0.32, cy + h * 0.05, cx + w * 0.15, cy + h * 0.16);
+
+  gfx.fillStyle(0x1a1a1a, 1);
+  gfx.fillCircle(cx + w * 0.08, cy - h * 0.02, 1.6);
+
+  gfx.generateTexture(key, w, h);
+}
+
 class MainScene extends Phaser.Scene {
   constructor() {
     super("main");
@@ -451,6 +558,8 @@ class MainScene extends Phaser.Scene {
     drawGroundTexture(gfx, "ground", 40, GROUND_HEIGHT);
     drawReedTexture(gfx, "reeds", GAME_WIDTH, 120);
     drawScanlineTexture(gfx, "scanline");
+    drawFoodTexture(gfx, "food");
+    drawBirdTexture(gfx, "bird");
 
     gfx.destroy();
   }
@@ -771,6 +880,18 @@ class MainScene extends Phaser.Scene {
     // opens with a beat of clear air before the first obstacle arrives.
     this.pipeSpawnCursorX = GAME_WIDTH + 320;
 
+    // Progression state — see the STAGE_GATES/FOOD_START_GATE/etc. block's
+    // own comment. gatesPassed drives currentStage()/difficultyMultiplier();
+    // nextCheckpointGate is the next 10-gate boundary due a flash (see
+    // updatePipes()). foods/birds don't need an explicit destroy-guard like
+    // duck/audio/controller do — they're plain Phaser GameObjects, same as
+    // pipes, and scene.restart() already tears the whole display list down.
+    this.foods = [];
+    this.birds = [];
+    this.gatesPassed = 0;
+    this.nextCheckpointGate = STAGE_GATES;
+    this.birdSpawnTimerS = Phaser.Math.Between(BIRD_SPAWN_INTERVAL_MIN, BIRD_SPAWN_INTERVAL_MAX) / 1000;
+
     // Audio — same defensive restart-guard pattern as the pipes/duck below:
     // this.sound (Phaser's SoundManager) is Game-level, not torn down by
     // scene.restart(), so any Sound instance from a previous run would
@@ -879,6 +1000,7 @@ class MainScene extends Phaser.Scene {
     [topShaft, topCap, botShaft, botCap].forEach((piece) => piece.setTint(color));
 
     this.pipes.push({ x, gapTop, gapBottom, scored: false, topShaft, topCap, botShaft, botCap });
+    return gapCenter; // handed to updatePipes() so it can center a food item in this same gap
   }
 
   destroyPipe(pipe) {
@@ -896,12 +1018,144 @@ class MainScene extends Phaser.Scene {
     pipe.botCap.x = x;
   }
 
-  updatePipes(dt) {
-    const dx = PIPE_SPEED * this.speedMultiplier * dt;
+  // --- Progression helpers ---
+  foodUnlocked() {
+    return this.gatesPassed >= FOOD_START_GATE;
+  }
 
+  birdsUnlocked() {
+    return this.gatesPassed >= BIRD_START_GATE;
+  }
+
+  // World-scroll speed multiplier (pipes/food/birds/ground) — 1 until
+  // RAMP_START_GATE, then a step up for every additional STAGE_GATES.
+  // Deliberately not applied to gravity/flap — see this constant's own
+  // comment for why.
+  difficultyMultiplier() {
+    if (this.gatesPassed < RAMP_START_GATE) return 1;
+    const level = Math.floor((this.gatesPassed - RAMP_START_GATE) / STAGE_GATES) + 1;
+    return 1 + level * DIFFICULTY_RAMP_STEP;
+  }
+
+  checkpointMessage(gate) {
+    if (gate === FOOD_START_GATE) return "CHECKPOINT " + gate + "\nFOOD INCOMING";
+    if (gate === BIRD_START_GATE) return "CHECKPOINT " + gate + "\nWATCH FOR BIRDS";
+    if (gate === RAMP_START_GATE) return "CHECKPOINT " + gate + "\nSPEEDING UP";
+    if (gate > RAMP_START_GATE) return "CHECKPOINT " + gate + "\nFASTER!";
+    return "CHECKPOINT " + gate;
+  }
+
+  // Brief fade-in/hold/fade-out banner, non-blocking — the run keeps going
+  // underneath it.
+  showCheckpointFlash(gate) {
+    const text = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT * 0.32, this.checkpointMessage(gate), {
+        fontFamily: '"Courier New", monospace',
+        fontSize: "26px",
+        fontStyle: "bold",
+        color: "#ffffff",
+        align: "center",
+        lineSpacing: 6,
+        stroke: "#10121c",
+        strokeThickness: 5,
+      })
+      .setOrigin(0.5)
+      .setDepth(25)
+      .setAlpha(0);
+
+    this.tweens.add({
+      targets: text,
+      alpha: 1,
+      duration: 180,
+      yoyo: true,
+      hold: 700,
+      onComplete: () => text.destroy(),
+    });
+  }
+
+  spawnFood(x, y) {
+    const sprite = this.add.image(x, y, "food").setDepth(9);
+    this.foods.push({ x, baseY: y, sprite, t: Math.random() * Math.PI * 2 });
+  }
+
+  // dx: same world-scroll delta as updatePipes() this frame — food scrolls
+  // in lockstep with the pipes it's centered in, plus its own bob.
+  updateFood(dt, dx) {
+    for (let i = this.foods.length - 1; i >= 0; i--) {
+      const food = this.foods[i];
+      food.x -= dx;
+      food.t += dt * FOOD_BOB_FREQ * Math.PI * 2;
+      const y = food.baseY + Math.sin(food.t) * FOOD_BOB_AMPLITUDE;
+      food.sprite.setPosition(food.x, y);
+
+      const distX = DUCK_X - food.x;
+      const distY = this.duck.y - y;
+      const collectRadius = DUCK_RADIUS + FOOD_RADIUS;
+      if (distX * distX + distY * distY < collectRadius * collectRadius) {
+        this.score += FOOD_SCORE;
+        this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
+        food.sprite.destroy();
+        this.foods.splice(i, 1);
+        continue;
+      }
+
+      if (food.x < -30) {
+        food.sprite.destroy();
+        this.foods.splice(i, 1);
+      }
+    }
+  }
+
+  maybeSpawnBird(dt) {
+    if (!this.birdsUnlocked()) return;
+    this.birdSpawnTimerS -= dt;
+    if (this.birdSpawnTimerS > 0) return;
+    const y = Phaser.Math.Between(GAP_MARGIN, GAME_HEIGHT - GROUND_HEIGHT - GAP_MARGIN);
+    const sprite = this.add.image(-40, y, "bird").setDepth(9);
+    this.birds.push({ x: -40, baseY: y, sprite, t: Math.random() * Math.PI * 2 });
+    this.birdSpawnTimerS = Phaser.Math.Between(BIRD_SPAWN_INTERVAL_MIN, BIRD_SPAWN_INTERVAL_MAX) / 1000;
+  }
+
+  // Birds have their own base speed (independent of PIPE_SPEED) but share
+  // the same speedMultiplier/difficultyMultiplier scaling as everything
+  // else, so they speed up in step with the pipes from gate 30 on.
+  updateBirds(dt) {
+    this.maybeSpawnBird(dt);
+    const dx = BIRD_BASE_SPEED * this.speedMultiplier * this.difficultyMultiplier() * dt;
+    for (let i = this.birds.length - 1; i >= 0; i--) {
+      const bird = this.birds[i];
+      bird.x += dx;
+      bird.t += dt * BIRD_BOB_FREQ * Math.PI * 2;
+      const y = bird.baseY + Math.sin(bird.t) * BIRD_BOB_AMPLITUDE;
+      bird.sprite.setPosition(bird.x, y);
+
+      if (bird.x > GAME_WIDTH + 60) {
+        bird.sprite.destroy();
+        this.birds.splice(i, 1);
+      }
+    }
+  }
+
+  checkBirdCollisions() {
+    for (const bird of this.birds) {
+      const distX = DUCK_X - bird.x;
+      const distY = this.duck.y - bird.sprite.y;
+      const hitRadius = DUCK_RADIUS + BIRD_RADIUS;
+      if (distX * distX + distY * distY < hitRadius * hitRadius) return true;
+    }
+    return false;
+  }
+
+  // dx: this frame's world-scroll delta, computed once in update() and
+  // shared with updateFood() so pipes/food never drift out of sync.
+  updatePipes(dt, dx) {
     this.pipeSpawnCursorX -= dx;
     if (this.pipeSpawnCursorX <= GAME_WIDTH) {
-      this.spawnPipePair(this.pipeSpawnCursorX);
+      const spawnX = this.pipeSpawnCursorX;
+      const gapCenter = this.spawnPipePair(spawnX);
+      if (this.foodUnlocked() && Math.random() < FOOD_SPAWN_CHANCE) {
+        this.spawnFood(spawnX, gapCenter);
+      }
       this.pipeSpawnCursorX += PIPE_SPACING;
     }
 
@@ -911,8 +1165,13 @@ class MainScene extends Phaser.Scene {
 
       if (!pipe.scored && pipe.x + PIPE_WIDTH / 2 < DUCK_X) {
         pipe.scored = true;
-        this.score += 1;
+        this.score += PIPE_SCORE;
+        this.gatesPassed += 1;
         this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
+        if (this.gatesPassed >= this.nextCheckpointGate) {
+          this.showCheckpointFlash(this.nextCheckpointGate);
+          this.nextCheckpointGate += STAGE_GATES;
+        }
       }
 
       if (pipe.x + PIPE_WIDTH / 2 < -20) {
@@ -945,7 +1204,14 @@ class MainScene extends Phaser.Scene {
     // movement in this scene is multiplied by dt, never a fixed per-frame
     // step, so speeds hold steady regardless of device refresh rate.
 
-    this.groundSprite.tilePositionX += PIPE_SPEED * this.speedMultiplier * dt;
+    // Shared world-scroll delta for this frame — pipes, food, and the
+    // ground all move by exactly this, so they never drift out of sync
+    // with each other. Birds have their own base speed (opposite
+    // direction) but the same speedMultiplier/difficultyMultiplier scaling
+    // — see updateBirds().
+    const worldDx = PIPE_SPEED * this.speedMultiplier * this.difficultyMultiplier() * dt;
+
+    this.groundSprite.tilePositionX += worldDx;
     this.updateWingFlap(dt);
 
     if (!this.started) {
@@ -965,13 +1231,17 @@ class MainScene extends Phaser.Scene {
     const rotT = 1 - Math.pow(1 - ROTATION_SMOOTHING, dt * 60);
     this.duck.angle += (targetAngle - this.duck.angle) * rotT;
 
-    this.updatePipes(dt);
+    this.updatePipes(dt, worldDx);
+    this.updateFood(dt, worldDx);
+    this.updateBirds(dt);
 
-    // Instant game over on collision with a pipe, the ground, or the
-    // ceiling — no health bar, no forgiveness.
+    // Instant game over on collision with a pipe, a bird, the ground, or
+    // the ceiling — no health bar, no forgiveness. Food is the one thing
+    // here that's never a death condition — collecting/missing it is
+    // handled entirely inside updateFood() above.
     const hitGround = this.duck.y + DUCK_RADIUS >= GAME_HEIGHT - GROUND_HEIGHT;
     const hitCeiling = this.duck.y - DUCK_RADIUS <= 0;
-    if (hitGround || hitCeiling || this.checkPipeCollisions()) {
+    if (hitGround || hitCeiling || this.checkPipeCollisions() || this.checkBirdCollisions()) {
       if (hitGround) this.duck.y = GAME_HEIGHT - GROUND_HEIGHT - DUCK_RADIUS;
       this.onGameOver();
     }
