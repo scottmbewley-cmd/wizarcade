@@ -171,8 +171,11 @@ const RAMP_START_GATE = 30;
 const DIFFICULTY_RAMP_STEP = 0.12; // world-scroll speed multiplier added per extra STAGE_GATES beyond RAMP_START_GATE
 
 // --- Scoring ---
-const PIPE_SCORE = 10; // points per gate passed — a flat +1 looked anemic against the 6-digit "SCORE 000000" display
-const FOOD_SCORE = 5; // bonus points per food item collected
+// Tuned against the 6-digit "SCORE 000000" HUD: old values (10/gate, 5/food)
+// left high scores sitting around 450, dwarfed by the display's 100000 max.
+const PIPE_SCORE = 675; // points per gate passed
+const FOOD_SCORE = 120; // bonus points per food item collected
+const CHECKPOINT_BONUS = 550; // bonus points on every 10-gate checkpoint
 
 // --- Food (unlocked at gate FOOD_START_GATE) — a double-cherry bonus
 // pickup, never required to keep playing, ALWAYS somewhere actually
@@ -1319,6 +1322,8 @@ class MainScene extends Phaser.Scene {
         this.gatesPassed += 1;
         this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
         if (this.gatesPassed >= this.nextCheckpointGate) {
+          this.score += CHECKPOINT_BONUS;
+          this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
           this.showCheckpointFlash(this.nextCheckpointGate);
           this.nextCheckpointGate += STAGE_GATES;
         }
