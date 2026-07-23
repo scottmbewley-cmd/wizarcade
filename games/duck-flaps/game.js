@@ -21,12 +21,27 @@ const GAME_HEIGHT = 800;
 
 // --- Duck ---
 const DUCK_X = 150; // fixed x position — only the pipes move horizontally
-const DUCK_RADIUS = 17; // collision circle, slightly tighter than the sprite's visual bounds
-const DUCK_TEX_W = 62;
-const DUCK_TEX_H = 90; // taller than wide — leaves real headroom above the head for the beanie (68 wasn't
-// enough: the hat's dome/pom got clipped off at the top edge of the texture canvas, see drawDuckBodyTexture())
-const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
+//
+// Geometry below (body/head/hat/bill proportions) is ported directly from
+// a supplied reference (duck-concept-poses_1.svg — an SVG with 3 wing
+// poses of the same duck), not hand-tuned like the earlier code-drawn
+// passes. SVG_SCALE converts that file's coordinates (body ellipse rx=55)
+// into this texture's pixel space; every draw call in
+// drawDuckBodyTexture()/drawDuckWingTexture() uses the SAME raw numbers
+// from that SVG (just multiplied by SVG_SCALE and offset from a body-
+// center anchor), so the on-screen duck is a faithful port, not a
+// reinterpretation.
+const SVG_SCALE = 0.46;
+const DUCK_RADIUS = 18; // collision circle, slightly tighter than the sprite's visual bounds
+const DUCK_TEX_W = 76;
+const DUCK_TEX_H = 70;
+const DUCK_BODY_CX = 29; // local x-anchor for the body within its own texture — NOT w/2: the bill juts out
+// further right than the tail/foot juts out left, so centering the body on the canvas would either clip
+// the bill or waste a lot of width on the left; this anchor is sized to exactly fit both sides instead.
+const DUCK_ORIGIN_Y = 0.586; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
 // this.duck.y (and DUCK_RADIUS collision math) still tracks the body, not the hat poking up above it
+const OUTLINE_COLOR = 0x2b2b2b; // the reference SVG outlines every shape in this same charcoal, not pure black
+const OUTLINE_WIDTH = 1.3;
 //
 // Retuning history, 2026-07-23:
 //  - Pass 1 (gravity 1500 / flap -430): only ~62px rise per flap, and the
@@ -94,18 +109,23 @@ const WING_FLAP_BOOST_MS = 260; // how long the boosted flap lasts after a tap
 
 // Wing texture/placement geometry — shared between drawDuckWingTexture()
 // and createDuck() so the drawn hinge point and the placed rotation origin
-// can never drift apart. Same ellipse size/position the wing used when it
-// was still baked into the main body texture; WING_HINGE_X/Y is that
-// ellipse's top edge (the shoulder), relative to the duck container's own
-// origin (the body center) — see DUCK_ORIGIN_Y.
-const WING_ELLIPSE_W = DUCK_TEX_W * 0.36;
-const WING_ELLIPSE_H = DUCK_TEX_W * 0.24;
-const WING_TEX_W = WING_ELLIPSE_W + DUCK_TEX_W * 0.08;
-const WING_TOP_MARGIN = DUCK_TEX_W * 0.05;
-const WING_TEX_H = WING_TOP_MARGIN + WING_ELLIPSE_H + DUCK_TEX_W * 0.03;
-const WING_ORIGIN_Y = WING_TOP_MARGIN / WING_TEX_H; // pivot at the hinge, not the wing's own center
-const WING_HINGE_X = -DUCK_TEX_W * 0.17;
-const WING_HINGE_Y = -DUCK_TEX_W * 0.22;
+// can never drift apart. Ported from the reference SVG's neutral-pose wing
+// path (the other 2 poses in that file are alternate wing shapes for a
+// sprite-swap animation; this project instead rotates ONE wing shape
+// procedurally around a hinge — see updateWingFlap() — so only the neutral
+// pose is used, as the rest silhouette the rotation swings from).
+// WING_LOCAL_ORIGIN_X/Y is where the wing path's own start point (its
+// shoulder/attachment edge, closest to the body) falls within the wing's
+// own small texture — that's also the rotation pivot (WING_ORIGIN_X/Y
+// below), so the wing swings from its shoulder, not its own center.
+const WING_TEX_W = 31;
+const WING_TEX_H = 27;
+const WING_LOCAL_ORIGIN_X = 29.3;
+const WING_LOCAL_ORIGIN_Y = 6.3;
+const WING_ORIGIN_X = WING_LOCAL_ORIGIN_X / WING_TEX_W;
+const WING_ORIGIN_Y = WING_LOCAL_ORIGIN_Y / WING_TEX_H;
+const WING_HINGE_X = -20 * SVG_SCALE; // duck-container-local placement (relative to the body-center origin)
+const WING_HINGE_Y = -5 * SVG_SCALE;
 
 // --- Pipes --- widened/slowed alongside the gentler flap above — small
 // precise taps need room to place the duck and time to react.
@@ -184,196 +204,197 @@ let audioGestureReceived = false;
 const COLOR_ACCENT = 0xffcc33; // HUD/duck yellow
 const COLOR_SKY_TOP = 0x1a3a5c;
 const COLOR_SKY_BOTTOM = 0x3f7fb0;
-const COLOR_PIPE = 0x2fa85a;
-const COLOR_PIPE_DARK = 0x1f7a3f;
-const COLOR_PIPE_HIGHLIGHT = 0x54d685;
 const COLOR_GROUND = 0x8a6a3c;
 const COLOR_GROUND_DARK = 0x6b4f2a;
 const COLOR_REED = 0x2c5a4a;
 
-// Matches the supplied logo (assets/duck-flaps-logo.png): a yellow duck
-// wearing a chunky knit beanie. Redrawn 2026-07-23 (second pass) — the
-// first redraw made the dome/cuff far too large relative to the head (they
-// dipped down past head-center into the eye/beak, and the dome's top
-// literally clipped off the edge of the texture canvas), which is why it
-// rendered as a lopsided blue smear rather than a hat. This version sizes
-// everything off headR with margins actually checked against the canvas
-// bounds, and keeps body-part SIZES tied to w (not h) so the taller canvas
-// (added for hat headroom) doesn't also inflate the body.
+// Pipe textures are baked in these three grayscale tones (see
+// drawPipeShaftTexture/drawPipeCapTexture) and recolored per pipe pair via
+// setTint() — see spawnPipePair() — cycling through PIPE_COLOR_PALETTE so
+// the gates aren't just green the whole way down.
+const PIPE_BASE_GRAY = 0xdcdcdc;
+const PIPE_HIGHLIGHT_GRAY = 0xffffff;
+const PIPE_SHADOW_GRAY = 0x8a8a8a;
+const PIPE_COLOR_PALETTE = [0x2fa85a, 0xe0533d, 0x8a4fd1, 0x3d8fe0, 0xe0428f, 0xd6a51f];
+
+// Phaser's Graphics has no native quadratic-bezier path command (unlike an
+// HTML5 canvas context) — approximates one instead: `points` is an SVG-Q-
+// path-style list [start, control, end, control, end, ...] (an odd-length
+// array; after the first point, every [control, end] pair is one more
+// quadratic segment continuing from the previous end point), sampled into
+// a many-sided polygon and filled/stroked as one closed shape.
+function fillQuadPath(gfx, points, steps) {
+  const flat = [points[0]];
+  for (let i = 1; i < points.length; i += 2) {
+    const p0 = points[i - 1];
+    const c = points[i];
+    const p1 = points[i + 1];
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps;
+      const mt = 1 - t;
+      flat.push([mt * mt * p0[0] + 2 * mt * t * c[0] + t * t * p1[0], mt * mt * p0[1] + 2 * mt * t * c[1] + t * t * p1[1]]);
+    }
+  }
+  gfx.beginPath();
+  gfx.moveTo(flat[0][0], flat[0][1]);
+  for (let i = 1; i < flat.length; i++) gfx.lineTo(flat[i][0], flat[i][1]);
+  gfx.closePath();
+  gfx.fillPath();
+  gfx.strokePath();
+}
+
+// Ported directly from the reference SVG (duck-concept-poses_1.svg) — a
+// yellow duck wearing a chunky knit beanie, outlined in charcoal. Every
+// coordinate below is the SVG's own number (scaled by SVG_SCALE, offset
+// from the body-center anchor DUCK_BODY_CX/bodyCy) — not a redraw/
+// reinterpretation, so proportions match the reference exactly. p(x, y)
+// does that SVG-local -> texture-local conversion for every shape.
 //
-// The wing used to be baked into this same texture — it's now a separate
-// image (drawDuckWingTexture() below) so it can flap/rotate independently
-// as its own child of the duck container. See createDuck().
+// Draw order matches the SVG's own element order (body, belly, head, bill,
+// hat dome, hat band, hat pom, eye, then the foot/tail ellipse LAST on
+// top) — the wing is the one exception, drawn on its own separate texture
+// (drawDuckWingTexture() below) so it can rotate independently as its own
+// child of the duck container. See createDuck().
 function drawDuckBodyTexture(gfx, key, w, h) {
   gfx.clear();
-  const cx = w / 2;
+  const bodyCx = DUCK_BODY_CX;
   const bodyCy = h * DUCK_ORIGIN_Y;
-  const headR = w * 0.24;
-  const headCx = cx + w * 0.08;
-  const headCy = bodyCy - headR * 1.7;
+  const s = SVG_SCALE;
+  const p = (x, y) => [bodyCx + x * s, bodyCy + y * s];
 
-  const yellow = 0xffcf3d;
-  const yellowLight = 0xffe480;
-  const yellowShade = 0xe0a827;
-  const beakColor = 0xff7f27;
-  const beakShade = 0xe2600f;
+  const bodyColor = 0xf4c542;
+  const bellyColor = 0xfce9a8;
+  const billColor = 0xff8c1a;
+  const eyeColor = 0x2b2b2b;
+  const hatMainColor = 0x3b7dd8;
+  const hatBandColor = 0x2f66b3;
+  const hatPomColor = 0xeef2f7;
 
-  // Tail
-  gfx.fillStyle(yellow, 1);
-  gfx.fillTriangle(
-    cx - w * 0.3, bodyCy,
-    cx - w * 0.48, bodyCy - w * 0.13,
-    cx - w * 0.48, bodyCy + w * 0.11
-  );
+  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
 
-  // Body
-  gfx.fillStyle(yellow, 1);
-  gfx.fillEllipse(cx, bodyCy, w * 0.8, w * 0.58);
+  // Body — ellipse rx=55 ry=42
+  let [bx, by] = p(0, 0);
+  gfx.fillStyle(bodyColor, 1);
+  gfx.fillEllipse(bx, by, 55 * 2 * s, 42 * 2 * s);
+  gfx.strokeEllipse(bx, by, 55 * 2 * s, 42 * 2 * s);
 
-  // Underside shading (soft contact shadow along the bottom edge)
-  gfx.fillStyle(yellowShade, 0.35);
-  gfx.fillEllipse(cx, bodyCy + w * 0.18, w * 0.66, w * 0.26);
+  // Belly — ellipse, no outline in the reference
+  let [belX, belY] = p(-8, 14);
+  gfx.fillStyle(bellyColor, 1);
+  gfx.fillEllipse(belX, belY, 34 * 2 * s, 22 * 2 * s);
 
-  // Belly highlight — low-center, clear of where the wing sits (a separate
-  // image layered on top at runtime — see createDuck()), so the two don't
-  // blend into one muddy patch the way the first pass did.
-  gfx.fillStyle(yellowLight, 0.85);
-  gfx.fillEllipse(cx - w * 0.04, bodyCy + w * 0.13, w * 0.32, w * 0.2);
-
-  // Head
-  gfx.fillStyle(yellow, 1);
+  // Head — circle r=26 at (42,-30)
+  let [headCx, headCy] = p(42, -30);
+  const headR = 26 * s;
+  gfx.fillStyle(bodyColor, 1);
   gfx.fillCircle(headCx, headCy, headR);
-  gfx.fillStyle(yellowLight, 0.55);
-  gfx.fillCircle(headCx - headR * 0.22, headCy - headR * 0.1, headR * 0.55);
+  gfx.strokeCircle(headCx, headCy, headR);
 
-  // Beak — upper + slightly darker lower mandible for a bit of thickness
-  gfx.fillStyle(beakColor, 1);
-  gfx.fillTriangle(
-    headCx + headR * 0.48, headCy - headR * 0.16,
-    headCx + headR * 1.22, headCy + headR * 0.12,
-    headCx + headR * 0.48, headCy + headR * 0.24
-  );
-  gfx.fillStyle(beakShade, 1);
-  gfx.fillTriangle(
-    headCx + headR * 0.48, headCy + headR * 0.1,
-    headCx + headR * 1.1, headCy + headR * 0.16,
-    headCx + headR * 0.48, headCy + headR * 0.4
-  );
+  // Bill — quadratic path M60,-30 Q90,-30 90,-22 Q90,-14 60,-18 Z
+  gfx.fillStyle(billColor, 1);
+  fillQuadPath(gfx, [p(60, -30), p(90, -30), p(90, -22), p(90, -14), p(60, -18)], 8);
 
-  // Eye — white, black pupil, tiny highlight dot for life
-  gfx.fillStyle(0xffffff, 1);
-  gfx.fillCircle(headCx + headR * 0.1, headCy - headR * 0.28, headR * 0.34);
-  gfx.fillStyle(0x1a1a1a, 1);
-  gfx.fillCircle(headCx + headR * 0.17, headCy - headR * 0.26, headR * 0.17);
-  gfx.fillStyle(0xffffff, 0.9);
-  gfx.fillCircle(headCx + headR * 0.12, headCy - headR * 0.33, headR * 0.06);
+  // Hat dome — quadratic path M22,-50 Q34,-80 60,-66 Q65,-55 60,-50 Q40,-56 22,-50 Z
+  gfx.fillStyle(hatMainColor, 1);
+  fillQuadPath(gfx, [p(22, -50), p(34, -80), p(60, -66), p(65, -55), p(60, -50), p(40, -56), p(22, -50)], 8);
 
-  // --- Beanie ---
-  // All offsets measured up from headCy in headR units so the fit stays
-  // correct regardless of head size: cuff sits just above the eye (eye is
-  // at -0.28headR), dome sits above the cuff, pom sits above the dome —
-  // never overlapping the face, never running past the canvas edge.
-  const hatMain = 0x3d7fe0;
-  const hatShade = 0x2456a8;
-  const hatHighlight = 0x6fa8f0;
-  const hatCx = headCx - headR * 0.04;
-
-  const cuffBottomY = headCy - headR * 0.65;
-  const cuffH = headR * 0.45;
-  const cuffTopY = cuffBottomY - cuffH;
-  const cuffHalfW = headR * 1.15;
-
-  const domeRX = headR * 0.95;
-  const domeRY = headR * 0.58;
-  const domeCy = cuffTopY + headR * 0.2 - domeRY; // dips slightly into the cuff band for a seamless join
-
-  // Dome, drawn first so the cuff (below) and highlight/ribs (above) both
-  // layer cleanly on top of it.
-  gfx.fillStyle(hatMain, 1);
-  gfx.fillEllipse(hatCx, domeCy, domeRX * 2, domeRY * 2);
-
-  // Ribbed knit texture — a fan of slightly darker lines converging toward
-  // the crown, the classic knit-cap cue a flat cap doesn't have.
-  gfx.lineStyle(Math.max(1, headR * 0.08), hatShade, 0.4);
-  for (let i = -2; i <= 2; i++) {
-    const spread = i * domeRX * 0.32;
+  // Hat band — rect x=20 y=-52 w=42 h=9, rotated -14deg around (41,-47).
+  // Phaser Graphics has no per-shape transform, so the 4 corners are
+  // rotated by hand (in SVG-local space, before the p() scale/offset).
+  gfx.fillStyle(hatBandColor, 1);
+  {
+    const rad = Phaser.Math.DegToRad(-14);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const pivotX = 41;
+    const pivotY = -47;
+    const corners = [
+      [20, -52],
+      [62, -52],
+      [62, -43],
+      [20, -43],
+    ].map(([x, y]) => {
+      const dx = x - pivotX;
+      const dy = y - pivotY;
+      return p(pivotX + dx * cos - dy * sin, pivotY + dx * sin + dy * cos);
+    });
     gfx.beginPath();
-    gfx.moveTo(hatCx + spread * 0.25, domeCy - domeRY * 0.75);
-    gfx.lineTo(hatCx + spread, cuffTopY);
+    gfx.moveTo(corners[0][0], corners[0][1]);
+    gfx.lineTo(corners[1][0], corners[1][1]);
+    gfx.lineTo(corners[2][0], corners[2][1]);
+    gfx.lineTo(corners[3][0], corners[3][1]);
+    gfx.closePath();
+    gfx.fillPath();
     gfx.strokePath();
   }
 
-  // Soft sheen along the upper-left of the dome for roundness
-  gfx.fillStyle(hatHighlight, 0.4);
-  gfx.fillEllipse(hatCx - domeRX * 0.32, domeCy - domeRY * 0.3, domeRX * 0.7, domeRY * 0.5);
+  // Hat pom — circle r=7 at (52,-72)
+  let [pomCx, pomCy] = p(52, -72);
+  gfx.fillStyle(hatPomColor, 1);
+  gfx.fillCircle(pomCx, pomCy, 7 * s);
+  gfx.strokeCircle(pomCx, pomCy, 7 * s);
 
-  // Thick folded cuff — wraps the whole head like a real knit brim, not a
-  // thin peaked band jutting off to one side.
-  gfx.fillStyle(hatShade, 1);
-  gfx.fillRoundedRect(hatCx - cuffHalfW, cuffTopY, cuffHalfW * 2, cuffH, cuffH * 0.5);
-  gfx.fillStyle(hatMain, 1);
-  gfx.fillRoundedRect(hatCx - cuffHalfW, cuffTopY + cuffH * 0.34, cuffHalfW * 2, cuffH * 0.5, cuffH * 0.25);
-  gfx.fillStyle(hatHighlight, 0.35);
-  gfx.fillRoundedRect(hatCx - cuffHalfW * 0.85, cuffTopY + cuffH * 0.1, cuffHalfW * 1.1, cuffH * 0.16, cuffH * 0.08);
+  // Eye — small circle, no outline in the reference
+  let [eyeCx, eyeCy] = p(48, -36);
+  gfx.fillStyle(eyeColor, 1);
+  gfx.fillCircle(eyeCx, eyeCy, 3.5 * s);
 
-  // Fluffy multi-lobe pom-pom on top, instead of one flat circle
-  const pomCx = hatCx;
-  const pomCy = domeCy - domeRY * 0.95;
-  const pomR = headR * 0.27;
-  gfx.fillStyle(0xeef3fa, 1);
-  [[-0.55, 0.15], [0.55, 0.15], [0, -0.35], [-0.3, -0.05], [0.3, -0.05]].forEach(([ox, oy]) => {
-    gfx.fillCircle(pomCx + ox * pomR, pomCy + oy * pomR, pomR * 0.62);
-  });
-  gfx.fillStyle(0xd7e0ee, 0.6);
-  gfx.fillCircle(pomCx + pomR * 0.15, pomCy + pomR * 0.2, pomR * 0.4);
+  // Foot/tail — ellipse rx=14 ry=6 at (-15,42), drawn last so it sits on
+  // top of the body's trailing edge, same as the reference's own element
+  // order.
+  let [footCx, footCy] = p(-15, 42);
+  gfx.fillStyle(bodyColor, 1);
+  gfx.fillEllipse(footCx, footCy, 14 * 2 * s, 6 * 2 * s);
+  gfx.strokeEllipse(footCx, footCy, 14 * 2 * s, 6 * 2 * s);
 
   gfx.generateTexture(key, w, h);
 }
 
 // The wing, on its own small texture so it can be a separate child image
-// that flaps independently of the body (see createDuck()). Geometry here
-// must match WING_ELLIPSE_W/H/WING_TEX_W/H/WING_TOP_MARGIN exactly — those
-// constants are also what createDuck() uses to set the pivot/origin, so the
-// drawn hinge and the rotation pivot can't drift apart.
+// that flaps independently of the body (see createDuck()). Path ported
+// from the reference SVG's neutral-pose wing: M-20,-5 Q-55,5 -45,35
+// Q-15,30 -5,5 Z. WING_LOCAL_ORIGIN_X/Y (the path's own start point, its
+// shoulder) is both where it's drawn from AND the image's rotation origin
+// (WING_ORIGIN_X/Y) — see that constant's own comment for why they have to
+// stay in lockstep.
 function drawDuckWingTexture(gfx, key) {
   gfx.clear();
-  const wingColor = 0xf0b429;
-  const wingShade = 0xd4941a;
-  const cx = WING_TEX_W / 2;
-  const cy = WING_TOP_MARGIN + WING_ELLIPSE_H / 2;
+  const wingColor = 0xe0a92e;
+  const s = SVG_SCALE;
+  const ox = WING_LOCAL_ORIGIN_X;
+  const oy = WING_LOCAL_ORIGIN_Y;
+  const p = (x, y) => [ox + x * s, oy + y * s];
 
+  gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
   gfx.fillStyle(wingColor, 1);
-  gfx.fillEllipse(cx, cy, WING_ELLIPSE_W, WING_ELLIPSE_H);
-  gfx.lineStyle(1.5, wingShade, 0.9);
-  gfx.strokeEllipse(cx, cy, WING_ELLIPSE_W, WING_ELLIPSE_H);
-  gfx.beginPath();
-  gfx.moveTo(cx - WING_ELLIPSE_W * 0.3, cy - WING_ELLIPSE_H * 0.28);
-  gfx.lineTo(cx + WING_ELLIPSE_W * 0.3, cy - WING_ELLIPSE_H * 0.02);
-  gfx.moveTo(cx - WING_ELLIPSE_W * 0.3, cy + WING_ELLIPSE_H * 0.1);
-  gfx.lineTo(cx + WING_ELLIPSE_W * 0.3, cy + WING_ELLIPSE_H * 0.36);
-  gfx.strokePath();
+  fillQuadPath(gfx, [p(-20, -5), p(-55, 5), p(-45, 35), p(-15, 30), p(-5, 5)], 8);
 
   gfx.generateTexture(key, WING_TEX_W, WING_TEX_H);
 }
 
+// Baked in grayscale (base/highlight/shadow bands as lightness only, no
+// hue of their own) rather than a fixed green, so setTint() at spawn time
+// (see spawnPipePair()) produces a clean, correctly-shaded color instead of
+// a muddy green-mixed-with-tint result — same white-base-plus-runtime-tint
+// convention Ricochet uses for its paddle/bumpers.
 function drawPipeShaftTexture(gfx, key, width, tileHeight) {
   gfx.clear();
-  gfx.fillStyle(COLOR_PIPE, 1);
+  gfx.fillStyle(PIPE_BASE_GRAY, 1);
   gfx.fillRect(0, 0, width, tileHeight);
-  gfx.fillStyle(COLOR_PIPE_HIGHLIGHT, 0.9);
+  gfx.fillStyle(PIPE_HIGHLIGHT_GRAY, 1);
   gfx.fillRect(width * 0.14, 0, width * 0.16, tileHeight);
-  gfx.fillStyle(COLOR_PIPE_DARK, 0.85);
+  gfx.fillStyle(PIPE_SHADOW_GRAY, 1);
   gfx.fillRect(width * 0.82, 0, width * 0.12, tileHeight);
   gfx.generateTexture(key, width, tileHeight);
 }
 
 function drawPipeCapTexture(gfx, key, width, height) {
   gfx.clear();
-  gfx.fillStyle(COLOR_PIPE, 1);
+  gfx.fillStyle(PIPE_BASE_GRAY, 1);
   gfx.fillRoundedRect(0, 0, width, height, 4);
-  gfx.fillStyle(COLOR_PIPE_HIGHLIGHT, 0.9);
+  gfx.fillStyle(PIPE_HIGHLIGHT_GRAY, 1);
   gfx.fillRoundedRect(width * 0.1, height * 0.12, width * 0.16, height * 0.6, 3);
-  gfx.lineStyle(2, COLOR_PIPE_DARK, 0.9);
+  gfx.lineStyle(2, PIPE_SHADOW_GRAY, 1);
   gfx.strokeRoundedRect(1, 1, width - 2, height - 2, 4);
   gfx.generateTexture(key, width, height);
 }
@@ -467,8 +488,8 @@ class MainScene extends Phaser.Scene {
     if (this.duck) {
       this.duck.destroy(); // destroys the body/wing children too — see Phaser's Container.destroy()
     }
-    this.duckBody = this.add.image(0, 0, "duckBody").setOrigin(0.5, DUCK_ORIGIN_Y);
-    this.duckWing = this.add.image(WING_HINGE_X, WING_HINGE_Y, "duckWing").setOrigin(0.5, WING_ORIGIN_Y);
+    this.duckBody = this.add.image(0, 0, "duckBody").setOrigin(DUCK_BODY_CX / DUCK_TEX_W, DUCK_ORIGIN_Y);
+    this.duckWing = this.add.image(WING_HINGE_X, WING_HINGE_Y, "duckWing").setOrigin(WING_ORIGIN_X, WING_ORIGIN_Y);
     this.duck = this.add.container(DUCK_X, GAME_HEIGHT / 2, [this.duckBody, this.duckWing]).setDepth(10);
   }
 
@@ -745,6 +766,7 @@ class MainScene extends Phaser.Scene {
 
     this.duckVelocityY = 0;
     this.pipes = [];
+    this.lastPipeColor = null;
     // First pipe spawns a bit further out than PIPE_SPACING so the run
     // opens with a beat of clear air before the first obstacle arrives.
     this.pipeSpawnCursorX = GAME_WIDTH + 320;
@@ -842,6 +864,19 @@ class MainScene extends Phaser.Scene {
     const botHeight = GAME_HEIGHT - GROUND_HEIGHT - gapBottom;
     const botShaft = this.add.tileSprite(x, gapBottom, PIPE_WIDTH, botHeight, "pipeShaft").setOrigin(0.5, 0).setDepth(6);
     const botCap = this.add.image(x, gapBottom + PIPE_CAP_HEIGHT / 2, "pipeCap").setDepth(7);
+
+    // Never the same color twice in a row (same "no immediate repeat"
+    // pattern Ricochet uses for its bumper recolor) — with only 6 colors,
+    // a plain random pick would repeat back-to-back often enough to look
+    // like it wasn't actually varying.
+    let color = Phaser.Utils.Array.GetRandom(PIPE_COLOR_PALETTE);
+    if (PIPE_COLOR_PALETTE.length > 1) {
+      while (color === this.lastPipeColor) {
+        color = Phaser.Utils.Array.GetRandom(PIPE_COLOR_PALETTE);
+      }
+    }
+    this.lastPipeColor = color;
+    [topShaft, topCap, botShaft, botCap].forEach((piece) => piece.setTint(color));
 
     this.pipes.push({ x, gapTop, gapBottom, scored: false, topShaft, topCap, botShaft, botCap });
   }
