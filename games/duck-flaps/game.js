@@ -24,7 +24,7 @@ const DUCK_X = 150; // fixed x position — only the pipes move horizontally
 const DUCK_RADIUS = 17; // collision circle, slightly tighter than the sprite's visual bounds
 const DUCK_TEX_W = 62;
 const DUCK_TEX_H = 90; // taller than wide — leaves real headroom above the head for the beanie (68 wasn't
-// enough: the hat's dome/pom got clipped off at the top edge of the texture canvas, see drawDuckTexture())
+// enough: the hat's dome/pom got clipped off at the top edge of the texture canvas, see drawDuckBodyTexture())
 const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center — setOrigin() uses this so
 // this.duck.y (and DUCK_RADIUS collision math) still tracks the body, not the hat poking up above it
 //
@@ -59,9 +59,45 @@ const DUCK_ORIGIN_Y = 0.706; // fraction of DUCK_TEX_H that is the body's center
 const GRAVITY = 1550; // px/s^2 — constant downward acceleration (accelerating fall, not linear)
 const FLAP_VELOCITY = -260; // px/s — fixed upward impulse, same magnitude every tap (~22px rise — a small nudge)
 const MAX_FALL_SPEED = 420; // px/s terminal velocity clamp — keeps a missed flap near the ground recoverable
-const ROTATION_VELOCITY_DIVISOR = 7; // duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
+const ROTATION_VELOCITY_DIVISOR = 7; // target duck.angle = clamp(velocityY / this, -25, 90) — nose up on flap, nose down while falling
 const ROTATION_MIN_DEG = -25;
 const ROTATION_MAX_DEG = 90;
+// Body angle now EASES toward that target instead of snapping to it every
+// frame (see update()'s "t = 1 - (1-SMOOTHING)^(dt*60)" — same easing
+// formula Ricochet's paddle uses for its own smoothed movement) — a flat
+// per-frame assignment looked jerky/twitchy, especially right after a flap
+// when velocity flips sign abruptly. Gliding toward the target instead
+// reads as a bird actually banking, not a sprite snapping between poses.
+const ROTATION_SMOOTHING = 0.22;
+
+// --- Wing flap animation ---
+// The wing is its own child image (see createDuck()), rotated around a
+// hinge point near its leading edge rather than swapping texture frames —
+// cheaper than a spritesheet and just as readable at this size. Flaps
+// continuously at an idle rate (so the duck reads as alive/gliding even
+// mid-air between taps) and kicks up to a faster, wider flap for a moment
+// right after each real tap, tying the animation to the input instead of
+// just running on a fixed clock.
+const WING_FLAP_FREQ_IDLE = 2.1; // flap cycles per second while gliding
+const WING_FLAP_FREQ_BOOST = 6.5; // flap cycles per second right after a tap
+const WING_FLAP_AMPLITUDE_IDLE = 16; // degrees of swing each side of rest
+const WING_FLAP_AMPLITUDE_BOOST = 34; // degrees of swing each side of rest, right after a tap
+const WING_FLAP_BOOST_MS = 260; // how long the boosted flap lasts after a tap
+
+// Wing texture/placement geometry — shared between drawDuckWingTexture()
+// and createDuck() so the drawn hinge point and the placed rotation origin
+// can never drift apart. Same ellipse size/position the wing used when it
+// was still baked into the main body texture; WING_HINGE_X/Y is that
+// ellipse's top edge (the shoulder), relative to the duck container's own
+// origin (the body center) — see DUCK_ORIGIN_Y.
+const WING_ELLIPSE_W = DUCK_TEX_W * 0.36;
+const WING_ELLIPSE_H = DUCK_TEX_W * 0.24;
+const WING_TEX_W = WING_ELLIPSE_W + DUCK_TEX_W * 0.08;
+const WING_TOP_MARGIN = DUCK_TEX_W * 0.05;
+const WING_TEX_H = WING_TOP_MARGIN + WING_ELLIPSE_H + DUCK_TEX_W * 0.03;
+const WING_ORIGIN_Y = WING_TOP_MARGIN / WING_TEX_H; // pivot at the hinge, not the wing's own center
+const WING_HINGE_X = -DUCK_TEX_W * 0.17;
+const WING_HINGE_Y = -DUCK_TEX_W * 0.22;
 
 // --- Pipes --- widened/slowed alongside the gentler flap above — small
 // precise taps need room to place the duck and time to react.
@@ -156,7 +192,11 @@ const COLOR_REED = 0x2c5a4a;
 // everything off headR with margins actually checked against the canvas
 // bounds, and keeps body-part SIZES tied to w (not h) so the taller canvas
 // (added for hat headroom) doesn't also inflate the body.
-function drawDuckTexture(gfx, key, w, h) {
+//
+// The wing used to be baked into this same texture — it's now a separate
+// image (drawDuckWingTexture() below) so it can flap/rotate independently
+// as its own child of the duck container. See createDuck().
+function drawDuckBodyTexture(gfx, key, w, h) {
   gfx.clear();
   const cx = w / 2;
   const bodyCy = h * DUCK_ORIGIN_Y;
@@ -167,8 +207,6 @@ function drawDuckTexture(gfx, key, w, h) {
   const yellow = 0xffcf3d;
   const yellowLight = 0xffe480;
   const yellowShade = 0xe0a827;
-  const wingColor = 0xf0b429;
-  const wingShade = 0xd4941a;
   const beakColor = 0xff7f27;
   const beakShade = 0xe2600f;
 
@@ -188,25 +226,11 @@ function drawDuckTexture(gfx, key, w, h) {
   gfx.fillStyle(yellowShade, 0.35);
   gfx.fillEllipse(cx, bodyCy + w * 0.18, w * 0.66, w * 0.26);
 
-  // Belly highlight — low-center, clear of the wing (below), so the two
-  // don't blend into one muddy patch the way the first pass did.
+  // Belly highlight — low-center, clear of where the wing sits (a separate
+  // image layered on top at runtime — see createDuck()), so the two don't
+  // blend into one muddy patch the way the first pass did.
   gfx.fillStyle(yellowLight, 0.85);
   gfx.fillEllipse(cx - w * 0.04, bodyCy + w * 0.13, w * 0.32, w * 0.2);
-
-  // Wing — upper-back placement (clear of the belly highlight), a visibly
-  // darker fill than the body plus its own outline so it actually reads as
-  // a separate feature instead of a same-hue smudge, with two short crease
-  // lines for feather detail.
-  gfx.fillStyle(wingColor, 1);
-  gfx.fillEllipse(cx - w * 0.17, bodyCy - w * 0.1, w * 0.36, w * 0.24);
-  gfx.lineStyle(1.5, wingShade, 0.9);
-  gfx.strokeEllipse(cx - w * 0.17, bodyCy - w * 0.1, w * 0.36, w * 0.24);
-  gfx.beginPath();
-  gfx.moveTo(cx - w * 0.28, bodyCy - w * 0.16);
-  gfx.lineTo(cx - w * 0.08, bodyCy - w * 0.06);
-  gfx.moveTo(cx - w * 0.28, bodyCy - w * 0.05);
-  gfx.lineTo(cx - w * 0.08, bodyCy);
-  gfx.strokePath();
 
   // Head
   gfx.fillStyle(yellow, 1);
@@ -298,6 +322,32 @@ function drawDuckTexture(gfx, key, w, h) {
   gfx.generateTexture(key, w, h);
 }
 
+// The wing, on its own small texture so it can be a separate child image
+// that flaps independently of the body (see createDuck()). Geometry here
+// must match WING_ELLIPSE_W/H/WING_TEX_W/H/WING_TOP_MARGIN exactly — those
+// constants are also what createDuck() uses to set the pivot/origin, so the
+// drawn hinge and the rotation pivot can't drift apart.
+function drawDuckWingTexture(gfx, key) {
+  gfx.clear();
+  const wingColor = 0xf0b429;
+  const wingShade = 0xd4941a;
+  const cx = WING_TEX_W / 2;
+  const cy = WING_TOP_MARGIN + WING_ELLIPSE_H / 2;
+
+  gfx.fillStyle(wingColor, 1);
+  gfx.fillEllipse(cx, cy, WING_ELLIPSE_W, WING_ELLIPSE_H);
+  gfx.lineStyle(1.5, wingShade, 0.9);
+  gfx.strokeEllipse(cx, cy, WING_ELLIPSE_W, WING_ELLIPSE_H);
+  gfx.beginPath();
+  gfx.moveTo(cx - WING_ELLIPSE_W * 0.3, cy - WING_ELLIPSE_H * 0.28);
+  gfx.lineTo(cx + WING_ELLIPSE_W * 0.3, cy - WING_ELLIPSE_H * 0.02);
+  gfx.moveTo(cx - WING_ELLIPSE_W * 0.3, cy + WING_ELLIPSE_H * 0.1);
+  gfx.lineTo(cx + WING_ELLIPSE_W * 0.3, cy + WING_ELLIPSE_H * 0.36);
+  gfx.strokePath();
+
+  gfx.generateTexture(key, WING_TEX_W, WING_TEX_H);
+}
+
 function drawPipeShaftTexture(gfx, key, width, tileHeight) {
   gfx.clear();
   gfx.fillStyle(COLOR_PIPE, 1);
@@ -365,7 +415,8 @@ class MainScene extends Phaser.Scene {
   buildTextures() {
     const gfx = this.add.graphics();
 
-    drawDuckTexture(gfx, "duck", DUCK_TEX_W, DUCK_TEX_H);
+    drawDuckBodyTexture(gfx, "duckBody", DUCK_TEX_W, DUCK_TEX_H);
+    drawDuckWingTexture(gfx, "duckWing");
     drawPipeShaftTexture(gfx, "pipeShaft", PIPE_WIDTH, 32);
     drawPipeCapTexture(gfx, "pipeCap", PIPE_WIDTH, PIPE_CAP_HEIGHT);
     drawGroundTexture(gfx, "ground", 40, GROUND_HEIGHT);
@@ -392,6 +443,38 @@ class MainScene extends Phaser.Scene {
     this.groundSprite = this.add
       .tileSprite(GAME_WIDTH / 2, GAME_HEIGHT - GROUND_HEIGHT / 2, GAME_WIDTH, GROUND_HEIGHT, "ground")
       .setDepth(8);
+  }
+
+  // The duck is a Container (body image + wing image as children) instead
+  // of a single Image — the wing needs to rotate around its own hinge
+  // independently of the body's glide tilt, and a Container is what lets
+  // two images share one position/rotation-tracked group like that. The
+  // container's own x/y IS the body-center point directly (no origin
+  // fraction to juggle at this level — the body child image still uses
+  // DUCK_ORIGIN_Y internally to line itself up with that point, same as
+  // when the duck was a single image). Everything outside this method
+  // (collision math, this.duck.y/.angle) keeps working unchanged, since a
+  // Container exposes the same x/y/angle properties an Image does.
+  createDuck() {
+    if (this.duck) {
+      this.duck.destroy(); // destroys the body/wing children too — see Phaser's Container.destroy()
+    }
+    this.duckBody = this.add.image(0, 0, "duckBody").setOrigin(0.5, DUCK_ORIGIN_Y);
+    this.duckWing = this.add.image(WING_HINGE_X, WING_HINGE_Y, "duckWing").setOrigin(0.5, WING_ORIGIN_Y);
+    this.duck = this.add.container(DUCK_X, GAME_HEIGHT / 2, [this.duckBody, this.duckWing]).setDepth(10);
+  }
+
+  // Continuous idle flap so the duck reads as alive/gliding even between
+  // taps, with a brief faster/wider flap right after each real tap — tying
+  // the animation to input instead of just running on a fixed clock. Runs
+  // every frame regardless of this.started, so the pre-flap idle-bob pose
+  // (see update()) still has flapping wings, not a frozen sprite.
+  updateWingFlap(dt) {
+    const boosted = this.time.now < this.wingBoostUntil;
+    const freq = boosted ? WING_FLAP_FREQ_BOOST : WING_FLAP_FREQ_IDLE;
+    const amplitude = boosted ? WING_FLAP_AMPLITUDE_BOOST : WING_FLAP_AMPLITUDE_IDLE;
+    this.wingFlapPhase += freq * dt * Math.PI * 2;
+    this.duckWing.angle = Math.sin(this.wingFlapPhase) * amplitude;
   }
 
   // Wires up the shared /controller/controller.js module. This is the
@@ -682,13 +765,9 @@ class MainScene extends Phaser.Scene {
     this.input.once("pointerdown", () => this.handleFirstInteraction());
     this.input.keyboard.once("keydown", () => this.handleFirstInteraction());
 
-    // Duck — guard mirrors Ricochet's own defensive destroy-before-recreate
-    // pattern, insurance against a stray leftover reference from a scene
-    // restart.
-    if (this.duck) {
-      this.duck.destroy();
-    }
-    this.duck = this.add.image(DUCK_X, GAME_HEIGHT / 2, "duck").setOrigin(0.5, DUCK_ORIGIN_Y).setDepth(10);
+    this.createDuck();
+    this.wingFlapPhase = 0;
+    this.wingBoostUntil = 0;
 
     this.createController();
 
@@ -735,6 +814,7 @@ class MainScene extends Phaser.Scene {
     if (this.gameOver) return;
     this.started = true;
     this.duckVelocityY = FLAP_VELOCITY * this.speedMultiplier;
+    this.wingBoostUntil = this.time.now + WING_FLAP_BOOST_MS;
     if (this.quackSound) this.quackSound.play();
     this.dismissHint();
     this.handleFirstInteraction();
@@ -823,6 +903,7 @@ class MainScene extends Phaser.Scene {
     // step, so speeds hold steady regardless of device refresh rate.
 
     this.groundSprite.tilePositionX += PIPE_SPEED * this.speedMultiplier * dt;
+    this.updateWingFlap(dt);
 
     if (!this.started) {
       // Idle bob before the first flap, purely cosmetic — the duck isn't
@@ -833,7 +914,13 @@ class MainScene extends Phaser.Scene {
 
     this.duckVelocityY = Math.min(this.duckVelocityY + GRAVITY * this.speedMultiplier * dt, MAX_FALL_SPEED * this.speedMultiplier);
     this.duck.y += this.duckVelocityY * dt;
-    this.duck.angle = Phaser.Math.Clamp(this.duckVelocityY / ROTATION_VELOCITY_DIVISOR, ROTATION_MIN_DEG, ROTATION_MAX_DEG);
+
+    // Glide toward the velocity-implied angle instead of snapping straight
+    // to it — see ROTATION_SMOOTHING's own comment for why (this is the
+    // same "t = 1 - (1-SMOOTHING)^(dt*60)" easing Ricochet's paddle uses).
+    const targetAngle = Phaser.Math.Clamp(this.duckVelocityY / ROTATION_VELOCITY_DIVISOR, ROTATION_MIN_DEG, ROTATION_MAX_DEG);
+    const rotT = 1 - Math.pow(1 - ROTATION_SMOOTHING, dt * 60);
+    this.duck.angle += (targetAngle - this.duck.angle) * rotT;
 
     this.updatePipes(dt);
 
