@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!--
+  Same rationale as the rest of the suite (Munch Man/Slither/Star Battle/
+  Ricochet): mobile/in-app browsers can keep serving a stale index.html
+  well after a fresh deploy, with no visible sign anything is wrong.
+  Best-effort ask for phone-side caches to treat the document itself as
+  never cacheable.
+-->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Duck Flaps — WizArcade</title>
+<meta property="og:title" content="Duck Flaps">
+<meta property="og:description" content="Flap through the reeds — one tap, one duck, no mercy.">
+<meta property="og:image" content="https://scottmbewley-cmd.github.io/wizarcade/assets/duck-flaps-logo.png">
+<meta property="og:url" content="https://scottmbewley-cmd.github.io/wizarcade/games/duck-flaps/index.html">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  // iOS Safari BUG FIX — same as the other WizArcade games: the address bar
+  // shows/hides dynamically and raw 100vh doesn't reliably track the
+  // actually-visible viewport there. Mirrored into --vvw/--vvh, which the
+  // stylesheet below reads instead of raw vh/vw units.
+  (function () {
+    function syncViewportVars() {
+      var vv = window.visualViewport;
+      var w = vv ? vv.width : window.innerWidth;
+      var h = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty("--vvw", w + "px");
+      document.documentElement.style.setProperty("--vvh", h + "px");
+    }
+    syncViewportVars();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncViewportVars);
+      window.visualViewport.addEventListener("scroll", syncViewportVars);
+    }
+    window.addEventListener("resize", syncViewportVars);
+    window.addEventListener("orientationchange", syncViewportVars);
+  })();
+</script>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  /*
+    #page-frame holds the game canvas (#game-container, aspect-locked to
+    480:800) stacked above the player-draggable/resizable control box — same
+    sizing formula as the rest of the suite (see star-invaders' index.html
+    for the full derivation). --wiz-ctrl-height is published live by
+    controller.js itself, no manual sizing needed on this end.
+  */
+  #page-frame {
+    width: var(--vvw, 100vw);
+    height: var(--vvh, 100vh);
+    max-width: calc((var(--vvh, 100vh) - (var(--wiz-ctrl-height, 153px) + 8px)) * 480 / 800);
+    max-height: calc(var(--vvw, 100vw) * 800 / 480 + var(--wiz-ctrl-height, 153px) + 8px);
+    position: relative;
+  }
+  #game-container {
+    width: 100%;
+    aspect-ratio: 480 / 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+</style>
+</head>
+<body>
+  <div id="page-frame">
+    <div id="game-container"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+  <!--
+    ?v=N cache-busts these two local scripts — GitHub Pages sends a real
+    Cache-Control: max-age=600 header (not just the document's own no-cache
+    meta tags above), so a browser can legitimately keep serving an old
+    game.js for up to 10 minutes after a fresh deploy otherwise. Bump v= any
+    time game.js (or controller.js) changes.
+  -->
+  <script src="../../controller/controller.js?v=2"></script>
+  <script src="game.js?v=1"></script>
+</body>
+</html>
