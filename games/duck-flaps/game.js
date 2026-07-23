@@ -188,15 +188,18 @@ const FOOD_BOB_AMPLITUDE = 6; // px, a gentle vertical bob for a "flying" feel
 const FOOD_BOB_FREQ = 1.6; // bob cycles/sec
 
 // --- Balloons (unlocked at gate BALLOON_START_GATE) — replace the earlier
-// bird hazard: spawned below the bottom edge of the screen on their own
-// timer, rising straight up into the flight path with a gentle horizontal
-// sway, either singly or in a bunch of 2-3. Baked in grayscale (like the
-// pipes) and setTint()'d per balloon from a bright palette, so no two
+// bird hazard: spawned below the bottom edge of the screen AND off to the
+// right (see BALLOON_SPAWN_X_MIN/MAX_OFFSET), rising straight up into the
+// flight path with a gentle horizontal sway while also scrolling left with
+// the world, either singly or in a bunch of 2-3. Baked in grayscale (like
+// the pipes) and setTint()'d per balloon from a bright palette, so no two
 // spawns need look alike.
 const BALLOON_RADIUS = 16; // collision circle
 const BALLOON_RISE_SPEED = 130; // px/s upward, before speedMultiplier/difficultyMultiplier
 const BALLOON_SWAY_AMPLITUDE = 14; // px, horizontal wobble while rising
 const BALLOON_SWAY_FREQ = 0.7; // sway cycles/sec
+const BALLOON_PULSE_AMPLITUDE = 0.05; // +/- scale, a gentle "breathing" pulse so the baked highlight shimmers
+const BALLOON_PULSE_FREQ = 1.1; // pulse cycles/sec
 const BALLOON_SPAWN_INTERVAL_MIN = 1600; // ms
 const BALLOON_SPAWN_INTERVAL_MAX = 2800; // ms
 const BALLOON_BUNCH_CHANCE = 0.35; // chance a spawn event releases a bunch instead of a single balloon
@@ -204,6 +207,19 @@ const BALLOON_BUNCH_MIN = 2;
 const BALLOON_BUNCH_MAX = 3;
 const BALLOON_BUNCH_SPACING = 26; // px between balloons within a bunch
 const BALLOON_COLOR_PALETTE = [0xff4d6d, 0xffb020, 0xffe066, 0x4dd8ff, 0x7ee08c, 0xbf5aff, 0xff8fd6];
+// Spawn x is offset PAST the right edge (like a pipe scrolling in), not
+// already somewhere on screen — otherwise there's no travel time for the
+// balloon to both scroll left AND rise up into the duck's actual altitude
+// before it's already level with (or past) the duck, which is why they
+// used to mostly do nothing. The offset range is tuned so that by the time
+// a balloon's x has scrolled from spawn to DUCK_X, it has also risen from
+// below the screen up into a typical mid-flight altitude band — and this
+// balance holds at ANY difficulty stage, since worldSpeed and
+// BALLOON_RISE_SPEED are both scaled by the same speedMultiplier/
+// difficultyMultiplier (their ratio, which is what determines arrival
+// height, never changes).
+const BALLOON_SPAWN_X_MIN_OFFSET = 140;
+const BALLOON_SPAWN_X_MAX_OFFSET = 280;
 
 // --- Ground ---
 const GROUND_HEIGHT = 70;
@@ -554,42 +570,61 @@ function drawFoodTexture(gfx, key) {
 // A balloon, baked in grayscale (base/shadow/highlight as lightness only)
 // so setTint() at spawn time (see spawnBalloon()) gives it a clean, glossy
 // color — same runtime-tint convention as the pipes. Hazard, unlocked at
-// gate BALLOON_START_GATE.
+// gate BALLOON_START_GATE. Shape is a real balloon silhouette (widest
+// close to the top, tapering to a narrow neck at the knot — a plain
+// symmetric ellipse read as a ball, not a balloon), built from a closed
+// 4-segment quadratic path via fillQuadPath() since Phaser's Graphics has
+// no ellipse primitive that isn't top/bottom-symmetric.
 function drawBalloonTexture(gfx, key) {
   gfx.clear();
-  const w = BALLOON_RADIUS * 2.2;
-  const h = BALLOON_RADIUS * 2.9;
+  const bodyH = BALLOON_RADIUS * 2.7; // top apex to the narrow base, excluding the knot/string
+  const halfW = BALLOON_RADIUS * 1.15; // widest point, half-width
+  const w = halfW * 2 + 8;
+  const h = bodyH + BALLOON_RADIUS * 1.3;
   const cx = w / 2;
-  const cy = h * 0.36;
-  const bodyW = w;
-  const bodyH = h * 0.68;
+  const topY = 4;
+  const baseY = topY + bodyH;
+  const wideY = topY + bodyH * 0.4; // the bulge sits in the upper half, not dead center
 
   // String
   gfx.lineStyle(1.2, 0x8a8a8a, 1);
   gfx.beginPath();
-  gfx.moveTo(cx, cy + bodyH * 0.56);
-  gfx.lineTo(cx, h * 0.98);
+  gfx.moveTo(cx, baseY + BALLOON_RADIUS * 0.32);
+  gfx.lineTo(cx, h - 3);
   gfx.strokePath();
 
   gfx.lineStyle(OUTLINE_WIDTH, OUTLINE_COLOR, 1);
 
   // Knot
   gfx.fillStyle(0xd8d8d8, 1);
-  gfx.fillTriangle(cx - 3.2, cy + bodyH * 0.44, cx + 3.2, cy + bodyH * 0.44, cx, cy + bodyH * 0.58);
-  gfx.strokeTriangle(cx - 3.2, cy + bodyH * 0.44, cx + 3.2, cy + bodyH * 0.44, cx, cy + bodyH * 0.58);
+  gfx.fillTriangle(cx - 3, baseY - 2, cx + 3, baseY - 2, cx, baseY + BALLOON_RADIUS * 0.32);
+  gfx.strokeTriangle(cx - 3, baseY - 2, cx + 3, baseY - 2, cx, baseY + BALLOON_RADIUS * 0.32);
 
-  // Body (mid gray base)
+  // Body — closed loop: base -> left bulge -> top apex -> right bulge -> base
   gfx.fillStyle(0xd8d8d8, 1);
-  gfx.fillEllipse(cx, cy, bodyW, bodyH);
-  gfx.strokeEllipse(cx, cy, bodyW, bodyH);
+  fillQuadPath(
+    gfx,
+    [
+      [cx, baseY],
+      [cx - halfW * 0.85, baseY - bodyH * 0.08],
+      [cx - halfW, wideY],
+      [cx - halfW * 1.02, topY + bodyH * 0.14],
+      [cx, topY],
+      [cx + halfW * 1.02, topY + bodyH * 0.14],
+      [cx + halfW, wideY],
+      [cx + halfW * 0.85, baseY - bodyH * 0.08],
+      [cx, baseY],
+    ],
+    8
+  );
 
-  // Shadow, bottom-right
-  gfx.fillStyle(0x8a8a8a, 0.6);
-  gfx.fillEllipse(cx + bodyW * 0.18, cy + bodyH * 0.2, bodyW * 0.55, bodyH * 0.5);
+  // Shadow, lower-right
+  gfx.fillStyle(0x8a8a8a, 0.55);
+  gfx.fillEllipse(cx + halfW * 0.32, wideY + bodyH * 0.22, halfW * 0.85, bodyH * 0.42);
 
-  // Glossy highlight, top-left
-  gfx.fillStyle(0xffffff, 0.85);
-  gfx.fillEllipse(cx - bodyW * 0.22, cy - bodyH * 0.28, bodyW * 0.32, bodyH * 0.22);
+  // Glossy highlight, upper-left
+  gfx.fillStyle(0xffffff, 0.9);
+  gfx.fillEllipse(cx - halfW * 0.38, wideY - bodyH * 0.16, halfW * 0.5, bodyH * 0.24);
 
   gfx.generateTexture(key, w, h);
 }
@@ -599,12 +634,14 @@ class MainScene extends Phaser.Scene {
     super("main");
   }
 
-  // Only the tiny quack sfx loads here. The much larger background music
-  // track is deliberately NOT loaded here — see loadMusicLazily(), kicked
-  // off from the end of create() instead, so it never delays the game
-  // becoming visible/interactive on a slow connection.
+  // Only the tiny sfx load here. The much larger background music track is
+  // deliberately NOT loaded here — see loadMusicLazily(), kicked off from
+  // the end of create() instead, so it never delays the game becoming
+  // visible/interactive on a slow connection.
   preload() {
     this.load.audio("quack", "audio/duck-flaps-quack.mp3");
+    this.load.audio("munch", "audio/duck-flaps-munch.mp3");
+    this.load.audio("levelup", "audio/duck-flaps-levelup.mp3");
   }
 
   buildTextures() {
@@ -966,9 +1003,19 @@ class MainScene extends Phaser.Scene {
       this.quackSound.destroy();
       this.quackSound = null;
     }
+    if (this.munchSound) {
+      this.munchSound.destroy();
+      this.munchSound = null;
+    }
+    if (this.levelUpSound) {
+      this.levelUpSound.destroy();
+      this.levelUpSound = null;
+    }
     this.muted = loadMuted();
     this.sound.mute = this.muted;
     this.quackSound = this.sound.add("quack", { volume: 0.7 });
+    this.munchSound = this.sound.add("munch", { volume: 0.8 });
+    this.levelUpSound = this.sound.add("levelup", { volume: 0.8 });
     this.musicWantsPlay = audioGestureReceived;
 
     // Broadest possible unlock trigger, on top of the controller's own tap
@@ -1108,6 +1155,8 @@ class MainScene extends Phaser.Scene {
   // Brief fade-in/hold/fade-out banner, non-blocking — the run keeps going
   // underneath it.
   showCheckpointFlash(gate) {
+    if (this.levelUpSound) this.levelUpSound.play();
+
     const text = this.add
       .text(GAME_WIDTH / 2, GAME_HEIGHT * 0.32, this.checkpointMessage(gate), {
         fontFamily: '"Courier New", monospace',
@@ -1154,6 +1203,7 @@ class MainScene extends Phaser.Scene {
       if (distX * distX + distY * distY < collectRadius * collectRadius) {
         this.score += FOOD_SCORE;
         this.scoreText.setText("SCORE " + String(this.score).padStart(6, "0"));
+        if (this.munchSound) this.munchSound.play();
         food.sprite.destroy();
         this.foods.splice(i, 1);
         continue;
@@ -1169,15 +1219,25 @@ class MainScene extends Phaser.Scene {
   spawnBalloon(x, y) {
     const color = Phaser.Utils.Array.GetRandom(BALLOON_COLOR_PALETTE);
     const sprite = this.add.image(x, y, "balloon").setDepth(9).setTint(color);
-    this.balloons.push({ baseX: x, baseY: y, renderX: x, swayPhase: Math.random() * Math.PI * 2, sprite });
+    this.balloons.push({
+      baseX: x,
+      baseY: y,
+      renderX: x,
+      swayPhase: Math.random() * Math.PI * 2,
+      pulsePhase: Math.random() * Math.PI * 2,
+      sprite,
+    });
   }
 
   // A single balloon, or a bunch of 2-3 spaced evenly around one random x —
-  // "single or bunches" per the brief, picked fresh every spawn.
+  // "single or bunches" per the brief, picked fresh every spawn. Spawn x is
+  // offset PAST the right edge (see BALLOON_SPAWN_X_MIN/MAX_OFFSET's own
+  // comment) so there's real travel time for it to arrive in the duck's
+  // actual flight path, not just pop up somewhere already on screen.
   spawnBalloonGroup() {
     const isBunch = Math.random() < BALLOON_BUNCH_CHANCE;
     const count = isBunch ? Phaser.Math.Between(BALLOON_BUNCH_MIN, BALLOON_BUNCH_MAX) : 1;
-    const centerX = Phaser.Math.Between(50, GAME_WIDTH - 50);
+    const centerX = GAME_WIDTH + Phaser.Math.Between(BALLOON_SPAWN_X_MIN_OFFSET, BALLOON_SPAWN_X_MAX_OFFSET);
     const spawnY = GAME_HEIGHT + 40 + Math.random() * 40; // below the bottom edge, out of view until it rises in
     for (let i = 0; i < count; i++) {
       const offset = (i - (count - 1) / 2) * BALLOON_BUNCH_SPACING;
@@ -1197,7 +1257,9 @@ class MainScene extends Phaser.Scene {
   // scrolling left with the rest of the world (the same worldDx as the
   // pipes/ground/food, computed once in update()) and swaying side to
   // side — the sway is layered on top of baseX purely for the rendered
-  // position, so it can't accumulate/drift the actual scroll position.
+  // position, so it can't accumulate/drift the actual scroll position. A
+  // gentle scale pulse on top makes the baked-in highlight shimmer rather
+  // than sit static.
   updateBalloons(dt, worldDx) {
     this.maybeSpawnBalloon(dt);
     const rise = BALLOON_RISE_SPEED * this.speedMultiplier * this.difficultyMultiplier() * dt;
@@ -1206,8 +1268,10 @@ class MainScene extends Phaser.Scene {
       b.baseX -= worldDx;
       b.baseY -= rise;
       b.swayPhase += dt * BALLOON_SWAY_FREQ * Math.PI * 2;
+      b.pulsePhase += dt * BALLOON_PULSE_FREQ * Math.PI * 2;
       b.renderX = b.baseX + Math.sin(b.swayPhase) * BALLOON_SWAY_AMPLITUDE;
       b.sprite.setPosition(b.renderX, b.baseY);
+      b.sprite.setScale(1 + Math.sin(b.pulsePhase) * BALLOON_PULSE_AMPLITUDE);
 
       if (b.baseY < -60 || b.baseX < -60) {
         b.sprite.destroy();
