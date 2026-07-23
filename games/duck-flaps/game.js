@@ -20,11 +20,13 @@
 // Progression is gate-count-driven, not time-driven — see the
 // STAGE_GATES/FOOD_START_GATE/BALLOON_START_GATE/RAMP_START_GATE block and
 // MainScene.difficultyMultiplier(): gates 0-9 are pipes only; 10-19 add
-// optional bonus food (double-cherries, spawned at a fully random height —
-// in a pipe gap or not); 20-29 add balloons rising up from below the
-// bottom of the screen into the flight path (avoid, same as a pipe); 30+
-// ramps the world-scroll speed up further every additional 10 gates. A
-// checkpoint flash announces every 10-gate boundary from the very start.
+// optional bonus food (double-cherries — always somewhere reachable,
+// either in open air between two columns of pipes, or centered in one
+// pipe's own gap, never inside a solid pipe shaft); 20-29 add balloons
+// rising up from below the bottom of the screen into the flight path
+// (avoid, same as a pipe); 30+ ramps the world-scroll speed up further
+// every additional 10 gates. A checkpoint flash announces every 10-gate
+// boundary from the very start.
 
 const GAME_WIDTH = 480;
 const GAME_HEIGHT = 800;
@@ -151,10 +153,11 @@ const GAP_MARGIN = 100; // min distance from the ceiling or the ground band to t
 // --- Progression: gate-count-driven stages, not time-driven (see
 // currentStage()/difficultyMultiplier() on MainScene). Gates 0-9 are plain
 // pipes, same as the very first version of this game. Gates 10-19 add
-// flying food (optional bonus points, at a random height — see
-// FOOD_MARGIN). Gates 20-29 add balloons rising up from below the bottom
-// of the screen into the flight path — avoid them like a pipe, they end
-// the run on contact. From gate 30 on, the whole world's scroll speed
+// flying food (optional bonus points, always somewhere reachable — see
+// updatePipes()'s two placement modes). Gates 20-29 add balloons rising up
+// from below the bottom of the screen into the flight path — avoid them
+// like a pipe, they end the run on contact. From gate 30 on, the whole
+// world's scroll speed
 // (pipes, food, balloons, ground) ramps up a bit further every additional
 // 10 gates — flap physics (gravity/impulse) are deliberately NOT part of
 // that ramp, so the controls stay exactly as learnable as ever; only the
@@ -172,13 +175,15 @@ const PIPE_SCORE = 10; // points per gate passed — a flat +1 looked anemic aga
 const FOOD_SCORE = 5; // bonus points per food item collected
 
 // --- Food (unlocked at gate FOOD_START_GATE) — a double-cherry bonus
-// pickup, never required to keep playing. Spawned alongside some pipes
-// (same cadence/x as a pipe pair) but at a fully random height — not tied
-// to that pipe's own gap, so it can land inside the gap OR behind the pipe
-// shaft itself.
+// pickup, never required to keep playing, ALWAYS somewhere actually
+// reachable (never inside a solid pipe shaft — see updatePipes()'s two
+// placement modes: "between columns," in the open air roughly midway
+// between one pipe and the next at any height, or "in the gap," centered
+// in that pipe's own opening).
 const FOOD_SPAWN_CHANCE = 0.65; // per eligible pipe pair, chance a food item spawns
+const FOOD_BETWEEN_COLUMNS_CHANCE = 0.55; // of a spawn, chance it's "between columns" vs. "in the gap"
 const FOOD_RADIUS = 12; // collision circle
-const FOOD_MARGIN = 50; // min distance from the ceiling or the ground band for a food spawn's y
+const FOOD_MARGIN = 50; // min distance from the ceiling or the ground band for a "between columns" spawn's y
 const FOOD_BOB_AMPLITUDE = 6; // px, a gentle vertical bob for a "flying" feel
 const FOOD_BOB_FREQ = 1.6; // bob cycles/sec
 
@@ -1055,6 +1060,7 @@ class MainScene extends Phaser.Scene {
     [topShaft, topCap, botShaft, botCap].forEach((piece) => piece.setTint(color));
 
     this.pipes.push({ x, gapTop, gapBottom, scored: false, topShaft, topCap, botShaft, botCap });
+    return gapCenter; // handed to updatePipes() for the "food inside this pipe's own gap" placement mode
   }
 
   destroyPipe(pipe) {
@@ -1226,12 +1232,21 @@ class MainScene extends Phaser.Scene {
     this.pipeSpawnCursorX -= dx;
     if (this.pipeSpawnCursorX <= GAME_WIDTH) {
       const spawnX = this.pipeSpawnCursorX;
-      this.spawnPipePair(spawnX);
-      // Food's height is fully independent of this pipe's own gap — it can
-      // land inside the gap or behind the pipe shaft itself, at random.
+      const gapCenter = this.spawnPipePair(spawnX);
+      // Food always lands somewhere actually reachable — never inside a
+      // solid pipe shaft. Two placement modes, picked at random:
+      //  - "between columns": clear open air, roughly midway between this
+      //    pipe and the next one, at ANY height (nothing blocks it there).
+      //  - "in the gap": positioned exactly in this pipe's own opening, so
+      //    collecting it lines up with threading the gap.
       if (this.foodUnlocked() && Math.random() < FOOD_SPAWN_CHANCE) {
-        const foodY = Phaser.Math.Between(FOOD_MARGIN, GAME_HEIGHT - GROUND_HEIGHT - FOOD_MARGIN);
-        this.spawnFood(spawnX, foodY);
+        if (Math.random() < FOOD_BETWEEN_COLUMNS_CHANCE) {
+          const foodX = spawnX + PIPE_SPACING / 2;
+          const foodY = Phaser.Math.Between(FOOD_MARGIN, GAME_HEIGHT - GROUND_HEIGHT - FOOD_MARGIN);
+          this.spawnFood(foodX, foodY);
+        } else {
+          this.spawnFood(spawnX, gapCenter);
+        }
       }
       this.pipeSpawnCursorX += PIPE_SPACING;
     }
