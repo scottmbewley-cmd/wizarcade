@@ -3,9 +3,10 @@
 // Tetris-inspired falling-block puzzle — NOT a clone. Shares the falling-
 // piece/grid concept and the classic square-grid gravity/rotation model,
 // but two mechanics are deliberately different from Tetris:
-//   1. Pieces are drawn from trominoes/tetrominoes/pentominoes (3, 4, or 5
-//      connected blocks), not just fixed 4-block tetrominoes — see
-//      TROMINOES/TETROMINOES/PENTOMINOES below.
+//   1. Pieces are drawn from trominoes AND tetrominoes (3 or 4 connected
+//      blocks), not just fixed 4-block tetrominoes — see TROMINOES/
+//      TETROMINOES below. (Pentominoes were tried and removed — kept the
+//      board pace tighter without a fifth block size.)
 //   2. A row clear requires TWO full rows to be complete AT THE SAME TIME
 //      (see evaluateRows()/performClear()) — a single full row stays on
 //      the board, armed and pulsing, until a second row joins it.
@@ -48,11 +49,6 @@ const GRID_OFFSET_Y = 100; // room for the HUD above the board
 // raw offsets directly, see rotateCells() below). One-sided sets only —
 // pieces rotate in 90-degree steps but are never mirrored, same spirit as
 // classic Tetris already using both S and Z instead of one shape + a flip.
-//
-// Pentominoes: the 12 standard (free) pentomino letter shapes — F, I, L, N,
-// P, T, U, V, W, X, Y, Z — each in one fixed chirality, not all 18 one-sided
-// mirror variants. That keeps the total shape count at 21 (2 + 7 + 12),
-// matching the spawn-pool design below.
 const TROMINOES = [
   [[0, 0], [1, 0], [2, 0]], // I
   [[0, 0], [0, 1], [1, 1]], // L (right-angle "V" tromino)
@@ -68,36 +64,18 @@ const TETROMINOES = [
   [[2, 0], [0, 1], [1, 1], [2, 1]], // L
 ];
 
-const PENTOMINOES = [
-  [[1, 0], [2, 0], [0, 1], [1, 1], [1, 2]], // F
-  [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]], // I
-  [[0, 0], [0, 1], [0, 2], [0, 3], [1, 3]], // L
-  [[1, 0], [1, 1], [0, 2], [1, 2], [0, 3]], // N
-  [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2]], // P
-  [[0, 0], [1, 0], [2, 0], [1, 1], [1, 2]], // T
-  [[0, 0], [2, 0], [0, 1], [1, 1], [2, 1]], // U
-  [[0, 0], [0, 1], [0, 2], [1, 2], [2, 2]], // V
-  [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2]], // W
-  [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]], // X
-  [[1, 0], [0, 1], [1, 1], [1, 2], [1, 3]], // Y
-  [[0, 0], [1, 0], [1, 1], [1, 2], [2, 2]], // Z
-];
-
 // Per-shape spawn weight, by pool. Selection is a flat weighted pick across
-// all 21 shapes (see buildShapePool()/pickRandomShape()) — with all three
-// equal, that's exactly uniform random across all ~21 shapes, per the build
-// spec's "simple uniform random to start." Bump one of these later (e.g.
-// lower WEIGHT_PENTOMINO) to make a size class rarer without touching the
-// selection logic itself.
+// all 9 shapes (see buildShapePool()/pickRandomShape()) — with both equal,
+// that's exactly uniform random across all 9 shapes. Bump one of these
+// later to make a size class rarer without touching the selection logic
+// itself.
 const WEIGHT_TROMINO = 1;
 const WEIGHT_TETROMINO = 1;
-const WEIGHT_PENTOMINO = 1;
 
 function buildShapePool() {
   const pools = [
     [TROMINOES, WEIGHT_TROMINO],
     [TETROMINOES, WEIGHT_TETROMINO],
-    [PENTOMINOES, WEIGHT_PENTOMINO],
   ];
   const list = [];
   pools.forEach(([shapes, weight]) => {
@@ -127,8 +105,8 @@ function randomPieceColor() {
 
 // Clockwise 90-degree rotation of a raw offset list, then re-normalized so
 // the bounding box's min x/y is back at 0. Works uniformly for any
-// polyomino (tromino/tetromino/pentomino alike) — no per-shape rotation
-// table needed, unlike SRS Tetris.
+// polyomino (tromino or tetromino alike) — no per-shape rotation table
+// needed, unlike SRS Tetris.
 function rotateCells(cells) {
   const rotated = cells.map(([x, y]) => [-y, x]);
   const minX = Math.min(...rotated.map((p) => p[0]));
@@ -150,9 +128,9 @@ const ROTATION_KICKS = [
 
 // --- Scoring ---
 // Bigger pieces score more than proportionally to their block count —
-// risk/reward for committing an awkward pentomino instead of a safe
+// risk/reward for committing an awkward tetromino instead of a safe
 // tromino. Falls back to a linear estimate for any size not in the table.
-const PIECE_LOCK_SCORE = { 3: 30, 4: 50, 5: 80 };
+const PIECE_LOCK_SCORE = { 3: 30, 4: 50 };
 const ROW_CLEAR_POINTS = 100; // per row, on top of...
 const DOUBLE_CLEAR_BONUS = 300; // ...this flat bonus for the double-clear event itself
 const EXTRA_ROW_BONUS = 150; // extra per row beyond the first two, for 3+ simultaneous clears
@@ -161,7 +139,10 @@ const EXTRA_ROW_BONUS = 150; // extra per row beyond the first two, for 3+ simul
 // elapsedSeconds() pattern as Ricochet) ---
 const BASE_FALL_INTERVAL_MS = 800;
 const MIN_FALL_INTERVAL_MS = 120;
-const FALL_SPEEDUP_PER_SECOND = 6; // ms shaved off the interval per elapsed second
+// ms shaved off the interval per elapsed second. Was 6 (reached max speed
+// in ~113s) — slowed to 2.5 (~272s to max) so the ramp takes noticeably
+// longer to bite.
+const FALL_SPEEDUP_PER_SECOND = 2.5;
 
 // --- Player-facing speed multiplier (persisted per device via localStorage) ---
 // Own namespaced key, same range/step/default as the rest of the suite.
