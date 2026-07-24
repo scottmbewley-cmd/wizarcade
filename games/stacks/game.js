@@ -137,12 +137,16 @@ const EXTRA_ROW_BONUS = 150; // extra per row beyond the first two, for 3+ simul
 
 // --- Fall-speed ramp (survival-time based, same currentBallSpeed()/
 // elapsedSeconds() pattern as Ricochet) ---
-const BASE_FALL_INTERVAL_MS = 800;
-const MIN_FALL_INTERVAL_MS = 120;
-// ms shaved off the interval per elapsed second. Was 6 (reached max speed
-// in ~113s) — slowed to 2.5 (~272s to max) so the ramp takes noticeably
-// longer to bite.
-const FALL_SPEEDUP_PER_SECOND = 2.5;
+// Ramped linearly in ROWS-PER-SECOND space, not in interval-ms space — a
+// straight-line decrease of the interval makes the actual fall RATE
+// (1/interval) accelerate hyperbolically near the end of the ramp (e.g. the
+// old 800->120ms linear decay roughly doubled the rows/sec in just the
+// final quarter of the ramp), which read as "speeds up too much, too
+// suddenly." Ramping the rate itself in a straight line makes the
+// difficulty curve feel genuinely even across the whole ramp.
+const BASE_FALL_RATE = 1.25; // rows/sec at t=0 (800ms interval)
+const MAX_FALL_RATE = 3.0; // rows/sec cap (~333ms interval) — well short of the old 8.3 rows/sec cap
+const RAMP_DURATION_SECONDS = 300; // seconds of survival to go from BASE to MAX_FALL_RATE
 
 // --- Player-facing speed multiplier (persisted per device via localStorage) ---
 // Own namespaced key, same range/step/default as the rest of the suite.
@@ -536,12 +540,9 @@ class MainScene extends Phaser.Scene {
 
   currentFallIntervalMs() {
     const elapsed = this.elapsedSeconds();
-    const ramped = Phaser.Math.Clamp(
-      BASE_FALL_INTERVAL_MS - elapsed * FALL_SPEEDUP_PER_SECOND,
-      MIN_FALL_INTERVAL_MS,
-      BASE_FALL_INTERVAL_MS
-    );
-    return ramped / this.speedMultiplier;
+    const t = Phaser.Math.Clamp(elapsed / RAMP_DURATION_SECONDS, 0, 1);
+    const rate = BASE_FALL_RATE + t * (MAX_FALL_RATE - BASE_FALL_RATE); // rows/sec, linear in t
+    return 1000 / rate / this.speedMultiplier;
   }
 
   canPlace(cells, col, row) {
